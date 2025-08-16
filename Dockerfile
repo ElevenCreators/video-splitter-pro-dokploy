@@ -1,7 +1,10 @@
 FROM node:18-alpine
 
 # Install ffmpeg and other dependencies
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg ffprobe
+
+# Verify ffmpeg installation
+RUN ffmpeg -version && which ffmpeg
 
 # Install bun
 RUN npm install -g bun
@@ -26,6 +29,10 @@ RUN bun run build
 
 # Expose port
 EXPOSE 3000
+
+# Set environment variables for ffmpeg
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/bin/ffprobe
 
 # Start the application
 CMD ["bun", "start"]

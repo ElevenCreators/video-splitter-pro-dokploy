@@ -6,7 +6,14 @@ import path from 'path'
 
 // Set ffmpeg path - try multiple sources
 function setupFFmpegPath() {
-  // Try ffmpeg-static first
+  // Try environment variable first (Docker containers)
+  if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
+    ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH)
+    console.log('Using environment FFMPEG_PATH:', process.env.FFMPEG_PATH)
+    return true
+  }
+
+  // Try ffmpeg-static (bundled binary)
   if (ffmpegStatic && fs.existsSync(ffmpegStatic)) {
     ffmpeg.setFfmpegPath(ffmpegStatic)
     console.log('Using ffmpeg-static:', ffmpegStatic)
@@ -14,21 +21,34 @@ function setupFFmpegPath() {
   }
 
   // Try system ffmpeg (common in Docker containers)
-  const systemPaths = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', 'ffmpeg']
+  const systemPaths = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/bin/ffmpeg', 'ffmpeg']
 
-  for (const path of systemPaths) {
+  for (const ffmpegPath of systemPaths) {
     try {
-      if (fs.existsSync(path)) {
-        ffmpeg.setFfmpegPath(path)
-        console.log('Using system ffmpeg:', path)
+      if (fs.existsSync(ffmpegPath)) {
+        ffmpeg.setFfmpegPath(ffmpegPath)
+        console.log('Using system ffmpeg:', ffmpegPath)
         return true
       }
     } catch (err) {
-      // Continue to next path
+      console.log(`Path ${ffmpegPath} not accessible:`, err)
     }
   }
 
-  console.log('FFmpeg not found in any standard location')
+  // Last resort: try to run ffmpeg command to see if it's in PATH
+  try {
+    const { execSync } = require('child_process')
+    const ffmpegPath = execSync('which ffmpeg', { encoding: 'utf8' }).trim()
+    if (ffmpegPath) {
+      ffmpeg.setFfmpegPath(ffmpegPath)
+      console.log('Using PATH ffmpeg:', ffmpegPath)
+      return true
+    }
+  } catch (err) {
+    console.log('FFmpeg not found in PATH:', err)
+  }
+
+  console.log('❌ FFmpeg not found in any location')
   return false
 }
 
@@ -53,22 +73,24 @@ interface ProcessingResult {
 // Development mode simulation (when ffmpeg is not available)
 function simulateVideoProcessing(fileName: string, segmentLength: number): Promise<ProcessingResult> {
   return new Promise((resolve) => {
+    console.log('🎬 Simulating video processing for:', fileName)
+
     // Simulate processing time
     setTimeout(() => {
       // Generate fake segments for testing
       const numSegments = Math.ceil(60 / segmentLength) // Assume 60-second video
       const segments = Array.from({ length: Math.min(numSegments, 6) }, (_, i) => ({
-        name: `segment_${String(i + 1).padStart(3, '0')}.mp4`,
-        data: btoa(`fake-video-data-segment-${i + 1}`), // Fake base64 data
-        size: Math.floor(Math.random() * 1000000) + 100000 // Random size between 100KB-1MB
+        name: `${fileName.replace(/\.[^/.]+$/, '')}_segment_${String(i + 1).padStart(3, '0')}.mp4`,
+        data: btoa(`fake-video-data-segment-${i + 1}-${Date.now()}`), // Fake base64 data
+        size: Math.floor(Math.random() * 1000000) + 500000 // Random size between 500KB-1.5MB
       }))
 
       resolve({
         success: true,
         segments,
-        message: `Video split into ${segments.length} segments (DEMO MODE)`
+        message: `Video split into ${segments.length} segments (DEMO MODE - FFmpeg not available)`
       })
-    }, 2000) // 2 second delay to simulate processing
+    }, 3000) // 3 second delay to simulate processing
   })
 }
 
@@ -82,7 +104,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
 
-    console.log(`Processing video: ${file.name}, size: ${file.size}, segments: ${segmentLength}s`)
+    console.log(`🎬 Processing video: ${file.name}, size: ${(file.size / 1024 / 1024).toFixed(2)}MB, segments: ${segmentLength}s`)
 
     // Check if ffmpeg is available
     if (!ffmpegAvailable) {
@@ -101,15 +123,16 @@ export async function POST(request: NextRequest) {
     }
 
     // Save uploaded file temporarily
-    const inputPath = path.join(tempDir, `input_${Date.now()}_${file.name}`)
-    const outputDir = path.join(tempDir, `output_${Date.now()}`)
+    const timestamp = Date.now()
+    const inputPath = path.join(tempDir, `input_${timestamp}_${file.name}`)
+    const outputDir = path.join(tempDir, `output_${timestamp}`)
     fs.mkdirSync(outputDir, { recursive: true })
 
     // Convert File to Buffer and save
     const buffer = Buffer.from(await file.arrayBuffer())
     fs.writeFileSync(inputPath, buffer)
 
-    console.log(`File saved to: ${inputPath}`)
+    console.log(`📁 File saved to: ${inputPath}`)
 
     // Process video with ffmpeg
     const outputPattern = path.join(outputDir, 'segment_%03d.mp4')
@@ -125,14 +148,14 @@ export async function POST(request: NextRequest) {
           '-reset_timestamps 1'
         ])
         .on('start', (commandLine) => {
-          console.log('FFmpeg command:', commandLine)
+          console.log('🎬 FFmpeg command:', commandLine)
         })
         .on('progress', (progress) => {
-          console.log(`Processing: ${progress.percent || 0}% done`)
+          console.log(`⏳ Processing: ${Math.round(progress.percent || 0)}% done`)
         })
         .on('end', () => {
           try {
-            console.log('FFmpeg processing completed')
+            console.log('✅ FFmpeg processing completed')
 
             // Read generated segments
             const segments = fs.readdirSync(outputDir)
@@ -148,7 +171,7 @@ export async function POST(request: NextRequest) {
                 }
               })
 
-            console.log(`Generated ${segments.length} segments`)
+            console.log(`🎉 Generated ${segments.length} segments successfully`)
 
             // Cleanup
             fs.rmSync(inputPath)
@@ -160,7 +183,7 @@ export async function POST(request: NextRequest) {
               message: `Video split into ${segments.length} segments`
             }))
           } catch (err) {
-            console.error('Post-processing error:', err)
+            console.error('❌ Post-processing error:', err)
             resolve(NextResponse.json({
               error: 'Error processing results',
               details: err instanceof Error ? err.message : 'Unknown error'
@@ -168,14 +191,14 @@ export async function POST(request: NextRequest) {
           }
         })
         .on('error', (err) => {
-          console.error('FFmpeg error:', err)
+          console.error('❌ FFmpeg error:', err)
 
           // Cleanup on error
           try {
             if (fs.existsSync(inputPath)) fs.rmSync(inputPath)
             if (fs.existsSync(outputDir)) fs.rmSync(outputDir, { recursive: true })
           } catch (cleanupErr) {
-            console.error('Cleanup error:', cleanupErr)
+            console.error('❌ Cleanup error:', cleanupErr)
           }
 
           resolve(NextResponse.json({
@@ -187,7 +210,7 @@ export async function POST(request: NextRequest) {
     })
 
   } catch (error) {
-    console.error('API error:', error)
+    console.error('❌ API error:', error)
     return NextResponse.json(
       { error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }
