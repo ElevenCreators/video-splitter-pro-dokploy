@@ -3,20 +3,45 @@ import ffmpeg from 'fluent-ffmpeg'
 import fs from 'fs'
 import path from 'path'
 
-// Force system FFmpeg usage - bypass ffmpeg-static
+// Force system FFmpeg usage with environment variables
 function setupFFmpegPath() {
-  // Force use system FFmpeg paths (Docker environment)
-  const systemPaths = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg']
+  console.log('🔍 Setting up FFmpeg path...')
+
+  // Try environment variable first (set in Dockerfile)
+  if (process.env.FFMPEG_PATH) {
+    console.log('📝 Environment FFMPEG_PATH:', process.env.FFMPEG_PATH)
+    if (fs.existsSync(process.env.FFMPEG_PATH)) {
+      ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH)
+      console.log('✅ Using environment FFmpeg:', process.env.FFMPEG_PATH)
+      return true
+    } else {
+      console.log('❌ Environment FFmpeg path does not exist:', process.env.FFMPEG_PATH)
+    }
+  }
+
+  // Try standard system paths
+  const systemPaths = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/bin/ffmpeg']
+
+  console.log('🔍 Checking system paths:', systemPaths)
 
   for (const ffmpegPath of systemPaths) {
+    console.log(`📍 Checking: ${ffmpegPath}`)
     if (fs.existsSync(ffmpegPath)) {
       ffmpeg.setFfmpegPath(ffmpegPath)
-      console.log('✅ Using system ffmpeg:', ffmpegPath)
+      console.log('✅ Found system FFmpeg:', ffmpegPath)
       return true
     }
   }
 
-  console.log('❌ System FFmpeg not found')
+  console.log('❌ No FFmpeg found in any location')
+  console.log('📂 Available files in /usr/bin:')
+  try {
+    const files = fs.readdirSync('/usr/bin').filter(f => f.includes('ffmpeg'))
+    console.log(files.length > 0 ? files : 'No ffmpeg files found')
+  } catch (err) {
+    console.log('Cannot read /usr/bin directory')
+  }
+
   return false
 }
 
