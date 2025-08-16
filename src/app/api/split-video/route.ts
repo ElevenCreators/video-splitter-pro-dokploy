@@ -4,10 +4,36 @@ import ffmpegStatic from 'ffmpeg-static'
 import fs from 'fs'
 import path from 'path'
 
-// Set ffmpeg path to the static binary
-if (ffmpegStatic) {
-  ffmpeg.setFfmpegPath(ffmpegStatic)
+// Set ffmpeg path - try multiple sources
+function setupFFmpegPath() {
+  // Try ffmpeg-static first
+  if (ffmpegStatic && fs.existsSync(ffmpegStatic)) {
+    ffmpeg.setFfmpegPath(ffmpegStatic)
+    console.log('Using ffmpeg-static:', ffmpegStatic)
+    return true
+  }
+
+  // Try system ffmpeg (common in Docker containers)
+  const systemPaths = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', 'ffmpeg']
+
+  for (const path of systemPaths) {
+    try {
+      if (fs.existsSync(path)) {
+        ffmpeg.setFfmpegPath(path)
+        console.log('Using system ffmpeg:', path)
+        return true
+      }
+    } catch (err) {
+      // Continue to next path
+    }
+  }
+
+  console.log('FFmpeg not found in any standard location')
+  return false
 }
+
+// Setup FFmpeg path on module load
+const ffmpegAvailable = setupFFmpegPath()
 
 // Disable the default body parser for this route
 export const dynamic = 'force-dynamic'
@@ -56,17 +82,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
 
-    // Check if we're in development and ffmpeg is not available
-    const isDevelopment = process.env.NODE_ENV === 'development'
-    const ffmpegAvailable = ffmpegStatic && fs.existsSync(ffmpegStatic)
+    console.log(`Processing video: ${file.name}, size: ${file.size}, segments: ${segmentLength}s`)
 
-    if (isDevelopment && !ffmpegAvailable) {
-      console.log('🚧 DEMO MODE: FFmpeg not available, simulating video processing...')
+    // Check if ffmpeg is available
+    if (!ffmpegAvailable) {
+      console.log('🚧 FFmpeg not available, using simulation mode')
       const result = await simulateVideoProcessing(file.name, segmentLength)
       return NextResponse.json(result)
     }
 
     // Production mode with real ffmpeg processing
+    console.log('✅ Using real FFmpeg processing')
+
     // Create temporary directory
     const tempDir = path.join(process.cwd(), 'temp')
     if (!fs.existsSync(tempDir)) {
@@ -82,6 +109,8 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(await file.arrayBuffer())
     fs.writeFileSync(inputPath, buffer)
 
+    console.log(`File saved to: ${inputPath}`)
+
     // Process video with ffmpeg
     const outputPattern = path.join(outputDir, 'segment_%03d.mp4')
 
@@ -96,13 +125,15 @@ export async function POST(request: NextRequest) {
           '-reset_timestamps 1'
         ])
         .on('start', (commandLine) => {
-          console.log('FFmpeg process started:', commandLine)
+          console.log('FFmpeg command:', commandLine)
         })
         .on('progress', (progress) => {
           console.log(`Processing: ${progress.percent || 0}% done`)
         })
         .on('end', () => {
           try {
+            console.log('FFmpeg processing completed')
+
             // Read generated segments
             const segments = fs.readdirSync(outputDir)
               .filter(file => file.endsWith('.mp4'))
@@ -116,6 +147,8 @@ export async function POST(request: NextRequest) {
                   size: fileBuffer.length
                 }
               })
+
+            console.log(`Generated ${segments.length} segments`)
 
             // Cleanup
             fs.rmSync(inputPath)
