@@ -12,8 +12,20 @@ if (ffmpegStatic) {
 // Disable the default body parser for this route
 export const dynamic = 'force-dynamic'
 
+interface VideoSegment {
+  name: string
+  data: string
+  size: number
+}
+
+interface ProcessingResult {
+  success: boolean
+  segments: VideoSegment[]
+  message: string
+}
+
 // Development mode simulation (when ffmpeg is not available)
-function simulateVideoProcessing(fileName: string, segmentLength: number): Promise<any> {
+function simulateVideoProcessing(fileName: string, segmentLength: number): Promise<ProcessingResult> {
   return new Promise((resolve) => {
     // Simulate processing time
     setTimeout(() => {
