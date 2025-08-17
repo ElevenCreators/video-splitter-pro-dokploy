@@ -1,7 +1,7 @@
-﻿\'use client\'
+﻿'use client'
 
-import { useState, useCallback } from \'react\'
-import { useDropzone } from \'react-dropzone\'
+import { useState, useCallback } from 'react'
+import { useDropzone } from 'react-dropzone'
 
 interface VideoSegment {
   name: string
@@ -16,23 +16,23 @@ export default function VideoSplitter() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [progress, setProgress] = useState(0)
   const [segments, setSegments] = useState<VideoSegment[]>([])
-  const [error, setError] = useState<string>(\'\')
+  const [error, setError] = useState<string>('')
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0]
-    if (file && file.size <= 2 * 1024 * 1024 * 1024) {
+    if (file && file.size <= 2 * 1024 * 1024 * 1024) { // 2GB limit
       setSelectedFile(file)
-      setError(\'\')
+      setError('')
       setSegments([])
       setProgress(0)
     } else if (file && file.size > 2 * 1024 * 1024 * 1024) {
-      setError(\'File size exceeds 2GB limit\')
+      setError('File size exceeds 2GB limit')
     }
   }, [])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { \'video/*\': [\'.mp4\', \'.avi\', \'.mov\', \'.mkv\', \'.webm\'] },
+    accept: { 'video/*': ['.mp4', '.avi', '.mov', '.mkv', '.webm'] },
     maxSize: 2 * 1024 * 1024 * 1024,
     multiple: false
   })
@@ -45,17 +45,17 @@ export default function VideoSplitter() {
           const r = await fetch(`/api/progress?jobId=${encodeURIComponent(jobId)}`)
           const j = await r.json()
           if (!j?.ok) return
-          const p = typeof j.job?.progress === \'number\' ? j.job.progress : 0
+          const p = typeof j.job?.progress === 'number' ? j.job.progress : 0
           setProgress(p)
-          if (j.job?.status === \'done\') {
+          if (j.job?.status === 'done') {
             clearInterval(t)
             setSegments(j.job.files || [])
             setProgress(100)
             resolvePoll()
           }
-          if (j.job?.status === \'error\') {
+          if (j.job?.status === 'error') {
             clearInterval(t)
-            rejectPoll(new Error(j.job.error || \'Processing failed\'))
+            rejectPoll(new Error(j.job.error || 'Processing failed'))
           }
         } catch (e) {
           clearInterval(t)
@@ -69,18 +69,18 @@ export default function VideoSplitter() {
     if (!selectedFile) return
     setIsProcessing(true)
     setProgress(0)
-    setError(\'\')
+    setError('')
     setSegments([])
 
     try {
       const formData = new FormData()
-      formData.append(\'video\', selectedFile)
-      formData.append(\'segmentLength\', String(segmentLength))
+      formData.append('video', selectedFile)
+      formData.append('segmentLength', String(segmentLength))
 
-      const res = await fetch(\'/api/split-video\', { method: \'POST\', body: formData })
+      const res = await fetch('/api/split-video', { method: 'POST', body: formData })
       if (!res.ok) {
         const e = await res.json().catch(() => ({}))
-        throw new Error(e?.error || \'Failed to process video\')
+        throw new Error((e as any)?.error || 'Failed to process video')
       }
       const result = await res.json()
 
@@ -97,10 +97,9 @@ export default function VideoSplitter() {
         return
       }
 
-      // Si no coincide con ninguno, error genérico
-      throw new Error(result?.error || \'Processing failed\')
+      throw new Error(result?.error || 'Processing failed')
     } catch (err) {
-      setError(err instanceof Error ? err.message : \'An error occurred\')
+      setError(err instanceof Error ? err.message : 'An error occurred')
       setProgress(0)
     } finally {
       setIsProcessing(false)
@@ -109,7 +108,7 @@ export default function VideoSplitter() {
 
   const downloadSegment = (segment: VideoSegment) => {
     if (segment.url) {
-      const a = document.createElement(\'a\')
+      const a = document.createElement('a')
       a.href = segment.url
       a.download = segment.name
       document.body.appendChild(a)
@@ -121,9 +120,9 @@ export default function VideoSplitter() {
       const byteChars = atob(segment.data)
       const byteNums = new Array(byteChars.length)
       for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i)
-      const blob = new Blob([new Uint8Array(byteNums)], { type: \'video/mp4\' })
+      const blob = new Blob([new Uint8Array(byteNums)], { type: 'video/mp4' })
       const url = URL.createObjectURL(blob)
-      const a = document.createElement(\'a\')
+      const a = document.createElement('a')
       a.href = url
       a.download = segment.name
       document.body.appendChild(a)
@@ -165,23 +164,45 @@ export default function VideoSplitter() {
       <div className="flex flex-col items-center justify-center gap-3">
         <label className="text-center">Time per clip:</label>
         <div className="flex flex-col items-center gap-2">
-          <input type="range" min="1" max="60" value={segmentLength} onChange={(e) => setSegmentLength(Number(e.target.value))} className="w-48 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer slider-orange" />
-          <div className="text-xl p-2 border-2 border-dashed border-white bg-transparent text-center rounded-xl w-20 transition-colors duration-500 hover:border-orange-500">{segmentLength}s</div>
+          <input
+            type="range"
+            min="1"
+            max="60"
+            value={segmentLength}
+            onChange={(e) => setSegmentLength(Number(e.target.value))}
+            className="w-48 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer slider-orange"
+          />
+          <div className="text-xl p-2 border-2 border-dashed border-white bg-transparent text-center rounded-xl w-20 transition-colors duration-500 hover:border-orange-500">
+            {segmentLength}s
+          </div>
           <div className="flex gap-2 mt-2">
             {[2,3,5,10,15,30].map(sec => (
-              <button key={sec} onClick={() => setSegmentLength(sec)} className={`px-3 py-1 rounded border text-sm transition-colors duration-300 ${segmentLength===sec ? 'bg-orange-500 border-orange-500 text-white' : 'border-gray-500 text-gray-300 hover:border-orange-500 hover:text-orange-500'}`}>{sec}s</button>
+              <button
+                key={sec}
+                onClick={() => setSegmentLength(sec)}
+                className={`px-3 py-1 rounded border text-sm transition-colors duration-300 ${segmentLength===sec ? 'bg-orange-500 border-orange-500 text-white' : 'border-gray-500 text-gray-300 hover:border-orange-500 hover:text-orange-500'}`}
+              >
+                {sec}s
+              </button>
             ))}
           </div>
         </div>
       </div>
 
-      <button onClick={handleSplit} disabled={!selectedFile || isProcessing} className="text-xl p-2 border-2 border-dashed rounded-xl transition-colors duration-500 hover:text-orange-500 hover:border-orange-500 disabled:opacity-50 disabled:cursor-not-allowed">
+      <button
+        onClick={handleSplit}
+        disabled={!selectedFile || isProcessing}
+        className="text-xl p-2 border-2 border-dashed rounded-xl transition-colors duration-500 hover:text-orange-500 hover:border-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
         {isProcessing ? 'Processing...' : 'Edit'}
       </button>
 
       <div className="flex w-[320px] flex-col justify-center items-center">
         <div className="w-full bg-gray-700 rounded-full h-2 mb-2">
-          <div className="bg-orange-500 h-2 rounded-full transition-all duration-300" style={{ width: `${progress}%` }} />
+          <div
+            className="bg-orange-500 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
         </div>
         <p className="p-1 text-sm mt-1">{progress.toFixed(2)}%</p>
       </div>
@@ -191,7 +212,11 @@ export default function VideoSplitter() {
           <h3 className="text-xl font-medium">Download Clips</h3>
           <div className="grid gap-2 max-w-md">
             {segments.map((segment, idx) => (
-              <button key={idx} onClick={() => downloadSegment(segment)} className="p-3 border border-orange-500 rounded-lg hover:bg-orange-500/10 transition-colors flex justify-between items-center">
+              <button
+                key={idx}
+                onClick={() => downloadSegment(segment)}
+                className="p-3 border border-orange-500 rounded-lg hover:bg-orange-500/10 transition-colors flex justify-between items-center"
+              >
                 <span>{segment.name}</span>
                 <span className="text-sm text-gray-400">{segment.size ? (segment.size/(1024*1024)).toFixed(2)+' MB' : 'ready'}</span>
               </button>
