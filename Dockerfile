@@ -50,10 +50,5 @@ RUN node -v && command -v ffmpeg && ffmpeg -version | head -1
 RUN mkdir -p /app/temp
 
 EXPOSE 3000
-
-# Healthcheck simple
-HEALTHCHECK --interval=20s --timeout=5s --retries=5 \
-  CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.PORT||3000),r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
-
-# Arranque con Node (Next oficial), escuchando en 0.0.0.0
+ENTRYPOINT []   # <--- añade esta línea
 CMD ["node","node_modules/next/dist/bin/next","start","-H","0.0.0.0","-p","3000"]
