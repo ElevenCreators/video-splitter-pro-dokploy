@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { ffmpeg } from "@/lib/ffmpeg";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
     if (!file) return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
     if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
 
-    console.log(`✅ formData OK: name="${file.name}", size=${(file as any).size ?? "unknown"} bytes`);
+    console.log(`✅ formData OK: name="${file.name}", size=${(file as File).size ?? "unknown"} bytes`);
 
     const baseDir = "/app/temp";
     await fsp.mkdir(baseDir, { recursive: true });
