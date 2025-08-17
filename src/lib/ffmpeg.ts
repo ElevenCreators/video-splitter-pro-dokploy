@@ -1,6 +1,7 @@
 ﻿import ffmpegFluent from "fluent-ffmpeg";
-import fs from "fs";
-import path from "path";
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 // Export principal para usar en routes: import { ffmpeg } from "@/lib/ffmpeg"
 export const ffmpeg = ffmpegFluent;
@@ -25,12 +26,10 @@ for (const p of CANDIDATES) {
 }
 
 if (!resolved) {
-  // No explotes aquí; el route puede simular o reportar error luego.
   console.warn("⚠️ FFmpeg path not resolved at init");
 } else {
-  // Verificación segura: SOLO -version (nunca uses process.argv)
   try {
-    const { spawnSync } = require("node:child_process");
+    // Verificación segura: SOLO -version (sin process.argv)
     const out = spawnSync(resolved, ["-version"], { encoding: "utf8" });
     if (out.error) {
       console.warn("⚠️ FFmpeg check error:", out.error.message);
