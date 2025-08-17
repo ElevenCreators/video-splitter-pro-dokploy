@@ -1,5 +1,6 @@
 ﻿'use client'
 
+import Image from 'next/image'
 import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
 
@@ -27,8 +28,6 @@ function getErrorFromJson(x: unknown): string | null {
   const v = x['error']
   return typeof v === 'string' ? v : null
 }
-
-/** Lee JSON sólo si el content-type es application/json */
 async function safeJson<T>(res: Response): Promise<T | null> {
   const ct = res.headers.get('content-type') || ''
   if (!ct.includes('application/json')) return null
@@ -38,6 +37,7 @@ async function safeJson<T>(res: Response): Promise<T | null> {
 export default function VideoSplitter() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [segmentLength, setSegmentLength] = useState(10)
+  const [allowReencode, setAllowReencode] = useState(false) // off por defecto
   const [isProcessing, setIsProcessing] = useState(false)
   const [progress, setProgress] = useState(0)
   const [segments, setSegments] = useState<VideoSegment[]>([])
@@ -64,7 +64,7 @@ export default function VideoSplitter() {
 
   async function pollProgress(jobId: string) {
     setProgress(5)
-    const deadline = Date.now() + 2 * 60_000 // 2 minutos de timeout
+    const deadline = Date.now() + 2 * 60_000
     await new Promise<void>((resolvePoll, rejectPoll) => {
       const t = setInterval(async () => {
         try {
@@ -73,29 +73,14 @@ export default function VideoSplitter() {
             rejectPoll(new Error('Processing timeout'))
             return
           }
-
           const r = await fetch(`/api/progress?jobId=${encodeURIComponent(jobId)}`)
-          // Si no es 200, intentamos leer texto para log y seguimos  (no romper el polling de una vez)
-          if (!r.ok) {
-            const txt = await r.text().catch(() => '')
-            console.warn('progress non-200:', r.status, txt.slice(0, 120))
-            return
-          }
-
+          if (!r.ok) return
           const data = await safeJson<Record<string, unknown>>(r)
-          if (!data) {
-            const txt = await r.text().catch(() => '')
-            console.warn('progress non-JSON body:', txt.slice(0, 120))
-            return
-          }
-
-          if (data['ok'] !== true) return
+          if (!data || data['ok'] !== true) return
           const job = isRecord(data['job']) ? (data['job'] as Record<string, unknown>) : null
           if (!job) return
-
           const p = job['progress']
           if (typeof p === 'number') setProgress(p)
-
           const status = job['status']
           if (status === 'done') {
             clearInterval(t)
@@ -108,10 +93,7 @@ export default function VideoSplitter() {
             const errMsg = typeof job['error'] === 'string' ? (job['error'] as string) : 'Processing failed'
             rejectPoll(new Error(errMsg))
           }
-        } catch (e) {
-          // En errores de red, no abortamos de una, esperamos siguiente tick
-          console.warn('progress fetch error:', e)
-        }
+        } catch { /* siguiente tick */ }
       }, 600)
     })
   }
@@ -127,55 +109,54 @@ export default function VideoSplitter() {
       const formData = new FormData()
       formData.append('video', selectedFile)
       formData.append('segmentLength', String(segmentLength))
+      formData.append('allowReencode', allowReencode ? '1' : '0')
 
       const res = await fetch('/api/split-video', { method: 'POST', body: formData })
       if (!res.ok) {
-        // Intenta JSON; si no, texto
         const j = await safeJson<unknown>(res)
         if (j) throw new Error(getErrorFromJson(j) ?? 'Failed to process video')
         const txt = await res.text().catch(() => '')
-        throw new Error(`Failed to process video: ${res.status} ${txt.slice(0, 160)}`)
+        throw new Error(`Failed to process video: ${res.status} ${txt.slice(0,160)}`)
       }
-
       const result = await safeJson<unknown>(res)
       if (!result) {
         const txt = await res.text().catch(() => '')
-        // Si el backend devolvió HTML (por proxy o algo), mostramos pista
-        throw new Error(`Unexpected response from /api/split-video: ${txt.slice(0, 160)}`)
+        throw new Error(`Unexpected response from /api/split-video: ${txt.slice(0,160)}`)
       }
-
-      // NUEVO FLUJO (jobs + polling)
       if (isJobResponse(result) && result.ok && typeof result.jobId === 'string') {
         await pollProgress(result.jobId)
         return
       }
-
-      // FLUJO ANTIGUO (base64 en la respuesta)
       if (isLegacyResponse(result) && result.success && Array.isArray(result.segments)) {
-        setSegments(result.segments)
-        setProgress(100)
-        return
+        setSegments(result.segments); setProgress(100); return
       }
-
       throw new Error(getErrorFromJson(result) ?? 'Processing failed')
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setError(msg)
+      setError(err instanceof Error ? err.message : String(err))
       setProgress(0)
     } finally {
       setIsProcessing(false)
     }
   }
 
-  const downloadSegment = (segment: VideoSegment) => {
+  const downloadSegment = async (segment: VideoSegment) => {
     if (segment.url) {
-      const a = document.createElement('a')
-      a.href = segment.url
-      a.download = segment.name
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      return
+      try {
+        const res = await fetch(segment.url)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url; a.download = segment.name
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        return
+      } catch {
+        const a = document.createElement('a')
+        a.href = segment.url; a.download = segment.name
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+        return
+      }
     }
     if (segment.data) {
       const byteChars = atob(segment.data)
@@ -184,64 +165,93 @@ export default function VideoSplitter() {
       const blob = new Blob([new Uint8Array(byteNums)], { type: 'video/mp4' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
-      a.href = url
-      a.download = segment.name
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
+      a.href = url; a.download = segment.name
+      document.body.appendChild(a); a.click(); document.body.removeChild(a)
       URL.revokeObjectURL(url)
     }
   }
 
   return (
-    <div className="flex flex-col justify-center items-center min-h-screen gap-6 bg-[#0b0b0c] text-white px-4">
-      <div className="text-center flex gap-1 flex-col m-4 p-1">
-        <h1 className="font-medium text-3xl">Eleven Creators Splitter</h1>
-        <p className="max-w-2xl text-center">
+    <div className="flex flex-col justify-center items-center min-h-screen gap-8 bg-[var(--bg)] text-[var(--fg)] px-4">
+      {/* Header con logo + título nuevo */}
+      <div className="text-center flex gap-3 flex-col m-4 p-1 items-center">
+        <Image
+          src="/logo.svg"
+          alt="Video Splitter PRO"
+          width={509}
+          height={120}
+          className="h-14 w-auto md:h-16"
+          priority
+        />
+        <h1 className="font-semibold text-display">Video Splitter PRO</h1>
+        <p className="max-w-2xl text-center text-[var(--fg-muted)]">
           Advanced video splitter to cut your videos into precise intervals (2s, 3s, or more). Take your posts to the next level with fast, simple, and seamless video editing.
         </p>
       </div>
 
-      <div className="max-w-sm p-1 my-2">
+      {/* Área de Drop como Card */}
+      <div className="w-full max-w-lg">
         <div
           {...getRootProps()}
-          className={`flex justify-center w-full h-32 px-4 transition border-2 border-white transition-colors duration-500 border-dashed rounded-md appearance-none cursor-pointer hover:border-orange-500 focus:outline-none ${isDragActive ? 'border-orange-500' : ''}`}
+          className={`card flex justify-center w-full h-36 px-4 border-dashed cursor-pointer transition-colors duration-300 focus:outline-none ${isDragActive ? 'border-brand-500' : ''}`}
         >
           <input {...getInputProps()} />
           <span className="flex items-center justify-center flex-col">
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center">
               <span className="font-medium text-center">
-                Drop files to attach, or <span className="text-orange-500 underline font-bold">browse</span>
+                Drop files to attach, or <span className="text-brand-500 underline font-bold">browse</span>
               </span>
             </div>
-            <div><p className="text-xs">Maximum 2Gb file.</p></div>
+            <div><p className="text-xs text-[var(--fg-muted)]">Maximum 2Gb file.</p></div>
             {selectedFile && <div className="mt-2"><p className="text-sm text-green-400 text-center">✓ {selectedFile.name}</p></div>}
           </span>
         </div>
       </div>
 
-      {error && <div className="text-red-400 text-sm max-w-md text-center">{error}</div>}
+      {/* Toggle re-encode con tooltip */}
+      <label className="relative flex items-center gap-2 text-sm group select-none">
+        <input
+          type="checkbox"
+          checked={allowReencode}
+          onChange={(e) => setAllowReencode(e.target.checked)}
+          className="accent-brand-500 h-4 w-4"
+        />
+        <span className="flex items-center gap-1">
+          Re-encode si es necesario
+          <span
+            className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-white/10 text-gray-300 cursor-help"
+            title="Activa una segunda pasada más lenta que recodifica el video si el corte rápido falla. Mantiene audio original y usa calidad alta (CRF 18, +faststart)."
+            aria-label="Más info"
+          >i</span>
+        </span>
+        <span className="tooltip">
+          Si el corte rápido (sin recodificar) falla o arroja 0 segmentos, habilitar esta opción intentará una segunda pasada recodificando solo el video (x264 CRF 18) y
+          manteniendo el audio original (<em>copy</em>) para conservar calidad. Es más lento y usa más CPU.
+        </span>
+      </label>
 
+      {/* Controles de tiempo */}
       <div className="flex flex-col items-center justify-center gap-3">
         <label className="text-center">Time per clip:</label>
-        <div className="flex flex-col items-center gap-2">
+        <div className="flex flex-col items-center gap-3">
           <input
             type="range"
             min="1"
             max="60"
             value={segmentLength}
             onChange={(e) => setSegmentLength(Number(e.target.value))}
-            className="w-48 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer slider-orange"
+            className="range"
           />
-          <div className="text-xl p-2 border-2 border-dashed border-white bg-transparent text-center rounded-xl w-20 transition-colors duration-500 hover:border-orange-500">
+          <div className="text-xl px-4 py-2 border border-[var(--border-subtle)] rounded-xl bg-black/20 text-center w-24">
             {segmentLength}s
           </div>
-          <div className="flex gap-2 mt-2">
+          <div className="flex flex-wrap gap-2 mt-1 justify-center">
             {[2,3,5,10,15,30].map(sec => (
               <button
                 key={sec}
                 onClick={() => setSegmentLength(sec)}
-                className={`px-3 py-1 rounded border text-sm transition-colors duration-300 ${segmentLength===sec ? 'bg-orange-500 border-orange-500 text-white' : 'border-gray-500 text-gray-300 hover:border-orange-500 hover:text-orange-500'}`}
+                className={`chip ${segmentLength===sec ? 'border-brand-500/70 text-white' : ''}`}
+                aria-pressed={segmentLength===sec}
               >
                 {sec}s
               </button>
@@ -250,36 +260,44 @@ export default function VideoSplitter() {
         </div>
       </div>
 
+      {/* Botón principal */}
       <button
         onClick={handleSplit}
         disabled={!selectedFile || isProcessing}
-        className="text-xl p-2 border-2 border-dashed rounded-xl transition-colors duration-500 hover:text-orange-500 hover:border-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
+        className="btn btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {isProcessing ? 'Processing...' : 'Edit'}
       </button>
 
-      <div className="flex w-[320px] flex-col justify-center items-center">
-        <div className="w-full bg-gray-700 rounded-full h-2 mb-2">
+      {/* Barra de progreso */}
+      <div className="flex w-[360px] max-w-full flex-col justify-center items-center">
+        <div className="w-full bg-white/10 rounded-full h-2 mb-2">
           <div
-            className="bg-orange-500 h-2 rounded-full transition-all duration-300"
+            className="bg-brand-500 h-2 rounded-full transition-all duration-300"
             style={{ width: `${progress}%` }}
           />
         </div>
         <p className="p-1 text-sm mt-1">{progress.toFixed(2)}%</p>
       </div>
 
+      {/* Errores */}
+      {error && <div className="text-red-400 text-sm max-w-md text-center">{error}</div>}
+
+      {/* Descargas */}
       {segments.length > 0 && (
-        <div className="flex flex-col items-center gap-4 mt-6">
+        <div className="flex flex-col items-center gap-4 mt-2 w-full max-w-lg">
           <h3 className="text-xl font-medium">Download Clips</h3>
-          <div className="grid gap-2 max-w-md">
+          <div className="grid gap-2 w-full">
             {segments.map((segment, idx) => (
               <button
                 key={idx}
                 onClick={() => downloadSegment(segment)}
-                className="p-3 border border-orange-500 rounded-lg hover:bg-orange-500/10 transition-colors flex justify-between items-center"
+                className="btn btn-muted justify-between"
               >
                 <span>{segment.name}</span>
-                <span className="text-sm text-gray-400">{segment.size ? (segment.size/(1024*1024)).toFixed(2)+' MB' : 'ready'}</span>
+                <span className="text-sm text-[var(--fg-muted)]">
+                  {segment.size ? (segment.size/(1024*1024)).toFixed(2)+' MB' : 'ready'}
+                </span>
               </button>
             ))}
           </div>

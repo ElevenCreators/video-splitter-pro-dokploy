@@ -1,5 +1,5 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
-import { ffmpeg } from "@/lib/ffmpeg"; // si exportas default: import ffmpeg from "@/lib/ffmpeg";
+import { ffmpeg } from "@/lib/ffmpeg";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -7,14 +7,7 @@ import { createJob, setProgress, completeJob, failJob, gc } from "@/lib/jobStore
 import { startCleaner, scheduleDeletion } from "@/lib/tempCleaner";
 
 type FFmpegAPI = typeof ffmpeg & { setFfmpegPath: (p: string) => void };
-interface FFmpegProgress {
-  frames?: number;
-  currentFps?: number;
-  currentKbps?: number;
-  targetSize?: number;
-  timemark?: string;
-  percent?: number;
-}
+interface FFmpegProgress { percent?: number }
 
 function getErrorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -24,32 +17,13 @@ function getErrorMessage(e: unknown): string {
 
 function setupFFmpegPath(): boolean {
   try {
-    console.log("🔍 Setting up FFmpeg path...");
-    if (process.env.SKIP_FFMPEG_CHECK) {
-      console.log("⏭️  SKIP_FFMPEG_CHECK=1 → check diferido a runtime");
-      return true;
-    }
     const api = ffmpeg as FFmpegAPI;
-
-    if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
-      api.setFfmpegPath(process.env.FFMPEG_PATH);
-      console.log("✅ Using environment FFmpeg:", process.env.FFMPEG_PATH);
-      return true;
+    if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) { api.setFfmpegPath(process.env.FFMPEG_PATH); return true; }
+    for (const p of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg"]) {
+      if (fs.existsSync(p)) { api.setFfmpegPath(p); return true; }
     }
-    const systemPaths = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg"];
-    for (const pth of systemPaths) {
-      if (fs.existsSync(pth)) {
-        api.setFfmpegPath(pth);
-        console.log("✅ Found system FFmpeg:", pth);
-        return true;
-      }
-    }
-    console.warn("⚠️ FFmpeg not found at import time; relying on PATH at runtime.");
     return true;
-  } catch (e) {
-    console.warn("⚠️ setupFFmpegPath error:", getErrorMessage(e));
-    return true;
-  }
+  } catch { return true; }
 }
 
 const ffmpegReady = setupFFmpegPath();
@@ -65,15 +39,10 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
     const file = formData.get("video") as File | null;
     const segmentSeconds = Math.max(1, Number((formData.get("segmentLength") as string) || "10") || 10);
+    const allowReencode = ["1","true","yes","on"].includes(String(formData.get("allowReencode") ?? "0").toLowerCase());
 
-    if (!file) {
-      return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
-    }
-
-    console.log(`🎬 Processing: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB) - ${segmentSeconds}s segments`);
-    if (!ffmpegReady) {
-      return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
-    }
+    if (!file) return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
+    if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
 
     const baseDir = "/app/temp";
     await fsp.mkdir(baseDir, { recursive: true });
@@ -83,75 +52,84 @@ export async function POST(request: NextRequest) {
     const inputPath = path.join(baseDir, `input_${jobId}_${file.name}`);
     const outDir = path.join(baseDir, `output_${jobId}`);
     await fsp.mkdir(outDir, { recursive: true });
-
     await fsp.writeFile(inputPath, Buffer.from(await file.arrayBuffer()));
 
     createJob(jobId);
 
-    let finished = false; // ← guard doble callback
+    let finished = false;
+    let triedReencode = false;
 
-    const command = ffmpeg(inputPath)
-      .output(path.join(outDir, "segment_%03d.mp4"))
-      .outputOptions([
-        "-y", "-c", "copy", "-map", "0",
-        "-f", "segment", "-segment_time", String(segmentSeconds),
-        "-reset_timestamps", "1",
-      ])
-      .on("start", (cmdLine: string) => {
-        console.log("🎬 FFmpeg started:", cmdLine);
-        setProgress(jobId, 5);
-      })
-      .on("progress", (p: FFmpegProgress) => {
-        if (typeof p.percent === "number") {
-          setProgress(jobId, Math.min(95, Math.floor(p.percent)));
-        }
-      })
-      .on("end", async () => {
-        if (finished) return;
-        finished = true;
-        try {
-          const names = (await fsp.readdir(outDir)).filter(n => n.endsWith(".mp4")).sort();
-          console.log(`📦 Post-processing: ${names.length} segment(s) at ${outDir}`);
-          const files = names.map(name => ({
-            name,
-            url: `/api/download?job=${encodeURIComponent(jobId)}&file=${encodeURIComponent(name)}`
-          }));
-          // Aunque haya 0 archivos, marcamos done (el cliente mostrará vacío). Log de advertencia:
-          if (files.length === 0) {
-            console.warn("⚠️ No segments found after FFmpeg end. Check input/flags.");
+    const buildAndRun = (mode: "copy" | "reencode") => {
+      const cmd = ffmpeg(inputPath).output(path.join(outDir, "segment_%03d.mp4"));
+
+      if (mode === "copy") {
+        cmd.outputOptions(["-y", "-c", "copy", "-map", "0", "-f", "segment", "-segment_time", String(segmentSeconds), "-reset_timestamps", "1"]);
+      } else {
+        cmd.outputOptions([
+          "-y", "-map", "0",
+          "-f", "segment", "-segment_time", String(segmentSeconds),
+          "-reset_timestamps", "1",
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",      // video alta calidad
+          "-c:a", "copy",                                              // conserva audio original
+          "-movflags", "+faststart",                                   // web friendly
+          "-force_key_frames", `expr:gte(t,n_forced*${segmentSeconds})`// keyframes alineados al segmento
+        ]);
+      }
+
+      cmd
+        .on("start", (line: string) => {
+          console.log(`🎬 FFmpeg started [${mode}]:`, line);
+          setProgress(jobId, mode === "copy" ? 5 : 10);
+        })
+        .on("progress", (p: FFmpegProgress) => {
+          if (typeof p.percent === "number") {
+            const base = mode === "copy" ? 5 : 10;
+            const scaled = Math.min(95, base + Math.floor(p.percent * 0.9));
+            setProgress(jobId, scaled);
           }
+        })
+        .on("end", async () => {
+          if (finished) return;
+          const names = (await fsp.readdir(outDir)).filter(n => n.endsWith(".mp4")).sort();
+          console.log(`📦 Post-processing [${mode}]: ${names.length} segment(s)`);
+
+          if (names.length === 0 && mode === "copy" && allowReencode && !triedReencode) {
+            triedReencode = true;
+            console.warn("⚠️ 0 segments with copy; retrying with re-encode...");
+            buildAndRun("reencode");
+            return;
+          }
+
+          finished = true;
+          const files = names.map(name => ({ name, url: `/api/download?job=${encodeURIComponent(jobId)}&file=${encodeURIComponent(name)}` }));
           completeJob(jobId, files);
-
-          try { if (fs.existsSync(inputPath)) { await fsp.rm(inputPath, { force: true }); } } catch {}
+          try { if (fs.existsSync(inputPath)) await fsp.rm(inputPath, { force: true }); } catch {}
           scheduleDeletion(jobId, outDir);
-          console.log(`✅ Job done: ${jobId}`);
-        } catch (e) {
-          const msg = getErrorMessage(e);
-          console.error("❌ Post-processing error:", msg);
-          failJob(jobId, msg);
-        }
-      })
-      .on("error", (err: unknown) => {
-        const msg = getErrorMessage(err);
-        console.error("❌ FFmpeg error:", msg);
-        // si ya terminó, ignoramos errores tardíos
-        if (!finished) {
-          failJob(jobId, msg);
-          try { if (fs.existsSync(inputPath)) { fs.rmSync(inputPath, { force: true }); } } catch {}
-          try { if (fs.existsSync(outDir)) { fs.rmSync(outDir, { recursive: true, force: true }); } } catch {}
-        } else {
-          console.warn("⚠️ Ignoring late error after end");
-        }
-      });
+          console.log(`✅ Job done: ${jobId} [${mode}]`);
+        })
+        .on("error", (err: unknown) => {
+          const msg = getErrorMessage(err);
+          console.error(`❌ FFmpeg error [${mode}]:`, msg);
+          if (!finished && mode === "copy" && allowReencode && !triedReencode) {
+            triedReencode = true;
+            console.warn("⚠️ Copy failed; retrying with re-encode...");
+            buildAndRun("reencode");
+            return;
+          }
+          if (!finished) {
+            finished = true;
+            failJob(jobId, msg);
+            try { if (fs.existsSync(inputPath)) fs.rmSync(inputPath, { force: true }); } catch {}
+            try { if (fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true, force: true }); } catch {}
+          }
+        })
+        .run();
+    };
 
-    command.run();
+    buildAndRun("copy");
     return NextResponse.json({ ok: true, jobId }, { status: 202 });
   } catch (error: unknown) {
     const msg = getErrorMessage(error);
-    console.error("❌ API error:", msg);
-    return NextResponse.json(
-      { ok: false, error: msg || "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }

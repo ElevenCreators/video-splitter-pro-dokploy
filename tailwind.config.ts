@@ -1,79 +1,61 @@
-import type { Config } from "tailwindcss";
-
-export default {
-    darkMode: ["class"],
-    content: [
-    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+﻿/** @type {import('tailwindcss').Config} */
+module.exports = {
+  darkMode: 'class',
+  content: [
+    './src/app/**/*.{ts,tsx}',
+    './src/components/**/*.{ts,tsx}',
+    './src/lib/**/*.{ts,tsx}',
   ],
   theme: {
+    container: { center: true, padding: '1rem' },
     extend: {
       colors: {
-        background: 'hsl(var(--background))',
-        foreground: 'hsl(var(--foreground))',
-        card: {
-          DEFAULT: 'hsl(var(--card))',
-          foreground: 'hsl(var(--card-foreground))'
+        // Paleta base neutra + acento "brand" en la gama naranja cálida (tu logo)
+        brand: {
+          50:  '#FFF6ED',
+          100: '#FFEAD5',
+          200: '#FDDCAB',
+          300: '#FBCB7A',
+          400: '#FFA64E',
+          500: '#FF7A18', // primario
+          600: '#FF8C32',
+          700: '#FF9D4B',
+          800: '#FFAE64',
+          900: '#FFC07E',
+          DEFAULT: '#FF7A18'
         },
-        popover: {
-          DEFAULT: 'hsl(var(--popover))',
-          foreground: 'hsl(var(--popover-foreground))'
+        surface: {
+          DEFAULT: '#0b0b0c',
+          soft: '#111214',
+          ring: 'rgba(255,122,24,0.35)'
         },
-        primary: {
-          DEFAULT: 'hsl(var(--primary))',
-          foreground: 'hsl(var(--primary-foreground))'
+        border: {
+          subtle: 'rgba(255,255,255,0.08)'
         },
-        secondary: {
-          DEFAULT: 'hsl(var(--secondary))',
-          foreground: 'hsl(var(--secondary-foreground))'
-        },
-        muted: {
-          DEFAULT: 'hsl(var(--muted))',
-          foreground: 'hsl(var(--muted-foreground))'
-        },
-        accent: {
-          DEFAULT: 'hsl(var(--accent))',
-          foreground: 'hsl(var(--accent-foreground))'
-        },
-        destructive: {
-          DEFAULT: 'hsl(var(--destructive))',
-          foreground: 'hsl(var(--destructive-foreground))'
-        },
-        border: 'hsl(var(--border))',
-        input: 'hsl(var(--input))',
-        ring: 'hsl(var(--ring))',
-        chart: {
-          '1': 'hsl(var(--chart-1))',
-          '2': 'hsl(var(--chart-2))',
-          '3': 'hsl(var(--chart-3))',
-          '4': 'hsl(var(--chart-4))',
-          '5': 'hsl(var(--chart-5))'
+        foreground: {
+          DEFAULT: '#FFFFFF',
+          muted: 'rgba(255,255,255,0.75)',
+          dim: 'rgba(255,255,255,0.6)'
         }
       },
       borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)'
+        xl: '0.875rem',
+        '2xl': '1rem'
       },
-      container: {
-      center: true,
-      padding: {
-        DEFAULT: '1rem',
-        sm: '2rem',
-        lg: '4rem',
-        xl: '5rem',
-        '2xl': '6rem',
+      boxShadow: {
+        soft: '0 1px 2px rgba(0,0,0,0.04), 0 6px 30px rgba(0,0,0,0.18)'
       },
-      screens: {
-        sm: '640px',
-        md: '768px',
-        lg: '1024px',
-        xl: '1280px',
-        '2xl': '1536px',
-      },
-      },
+      ringColor: ({ theme }) => ({
+        DEFAULT: theme('colors.brand.500'),
+      }),
+      ringOffsetColor: ({ theme }) => ({
+        DEFAULT: theme('colors.surface.soft')
+      }),
+      fontSize: {
+        // un pelín más “editorial”
+        'display': ['2.25rem', { lineHeight: '1.1', letterSpacing: '-0.02em' }]
+      }
     }
   },
-  plugins: [require("tailwindcss-animate")],
-} satisfies Config;
+  plugins: [],
+}

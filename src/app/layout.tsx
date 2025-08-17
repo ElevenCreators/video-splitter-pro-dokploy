@@ -1,40 +1,22 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+﻿import type { Metadata } from "next";
 import "./globals.css";
-import ClientBody from "./ClientBody";
-import Script from "next/script";
+import { Inter } from "next/font/google";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "Eleven Creators - VideoSplitter Pro",
-  description: "Advanced video splitter to cut your videos into precise intervals (2s, 3s, or more). Take your posts to the next level with fast, simple, and seamless video editing.",
+  title: "Video Splitter PRO",
+  description: "Fast, precise video splitting for social-ready clips.",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
-      <head>
-        <Script
-          crossOrigin="anonymous"
-          src="//unpkg.com/same-runtime/dist/index.global.js"
-        />
-      </head>
-      <body suppressHydrationWarning className="antialiased">
-        <ClientBody>{children}</ClientBody>
-      </body>
+    <html lang="en" className={inter.variable}>
+      <body className="min-h-dvh bg-[var(--bg)] text-[var(--fg)]">{children}</body>
     </html>
   );
 }
