@@ -79,8 +79,7 @@ export async function POST(request: NextRequest) {
     const segmentSeconds = Math.max(1, Number((formData.get("segmentLength") as string) || "10") || 10);
     const allowReencode = ["1","true","yes","on"].includes(String(formData.get("allowReencode") ?? "0").toLowerCase());
 
-    const exactSegments = ["1","true","yes","on"].includes(String(formData.get("exactSegments") ?? "0").toLowerCase());
-if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
+    if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
 
     const baseDir = "/app/temp";
     await fsp.mkdir(baseDir, { recursive: true });
@@ -223,12 +222,11 @@ if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready
         .run();
     };
 
-    exactSegments ? buildAndRun("reencode") : buildAndRun("copy");
-    return NextResponse.json({ ok: true, jobId }, { status: 202, headers: { "cache-control": "no-store" } });
+    buildAndRun("copy");
+    return NextResponse.json({ ok: true, jobId }, { status: 202 });
   } catch (error: unknown) {
     const msg = getErrorMessage(error);
     console.error("❌ Handler error:", msg);
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
-

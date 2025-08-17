@@ -109,8 +109,7 @@ export default function VideoSplitter() {
       const formData = new FormData()
       formData.append('video', selectedFile)
       formData.append('segmentLength', String(segmentLength))
-      formData.append("allowReencode", allowReencode ? '1' : '0')
-.append("exactSegments", (typeof allowReencode !== 'undefined' ? (allowReencode ? "1":"0") : "1"))
+      formData.append('allowReencode', allowReencode ? '1' : '0')
 
       const res = await fetch('/api/split-video', { method: 'POST', body: formData })
       if (!res.ok) {
@@ -306,5 +305,4 @@ export default function VideoSplitter() {
     </div>
   )
 }
-
 

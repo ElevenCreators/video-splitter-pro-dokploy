@@ -1,103 +1,66 @@
-﻿import { NextRequest } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
 
-export const runtime = "nodejs";
+/** RFC5987 filename* encoder */
+function encodeRFC5987(value: string): string {
+  return encodeURIComponent(value)
+    .replace(/['()]/g, escape)
+    .replace(/\*/g, "%2A");
+}
+
+/** Sanitiza nombre de archivo para evitar traversal */
+function safeFileName(name: string): string {
+  // elimina separadores y normaliza
+  const base = path.basename(name).replace(/[\r\n]/g, "").trim();
+  return base || "segment.mp4";
+}
+
 export const dynamic = "force-dynamic";
-
-function nodeToWebStream(s: fs.ReadStream): ReadableStream {
-  // @ts-expect-error - types mismatch between Node/Web readable
-  return Readable.toWeb(s);
-}
-
-function badRequest(msg: string, status = 400) {
-  return new Response(JSON.stringify({ ok: false, error: msg }), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8" },
-  });
-}
-
-async function sendFile(req: NextRequest, headOnly: boolean) {
-  try {
-    const url = new URL(req.url);
-    const job = url.searchParams.get("job") || "";
-    const fileParam = url.searchParams.get("file") || "";
-    if (!job || !fileParam) return badRequest("Missing job/file");
-
-    const safeFile = path.basename(fileParam);
-    const baseDir = path.join("/app/temp", `output_${job}`);
-    const filePath = path.join(baseDir, safeFile);
-
-    if (!fs.existsSync(filePath)) {
-      return badRequest("File not found", 404);
-    }
-
-    const stat = await fsp.stat(filePath);
-    const total = stat.size;
-    const range = req.headers.get("range");
-
-    const common = {
-      "content-type": "video/mp4",
-      "accept-ranges": "bytes",
-      "content-disposition": `attachment; filename="${safeFile}"`,
-      "cache-control": "no-store",
-    } as Record<string, string>;
-
-    if (range) {
-      const m = /bytes=(\d*)-(\d*)/.exec(range);
-      let start = 0;
-      let end = total - 1;
-      if (m) {
-        if (m[1]) start = Math.max(0, parseInt(m[1], 10));
-        if (m[2]) end = Math.min(total - 1, parseInt(m[2], 10));
-      }
-      if (start > end || start >= total) {
-        return new Response(null, {
-          status: 416,
-          headers: {
-            ...common,
-            "content-range": `bytes */${total}`,
-          },
-        });
-      }
-
-      const chunkSize = end - start + 1;
-      const headers = {
-        ...common,
-        "content-length": String(chunkSize),
-        "content-range": `bytes ${start}-${end}/${total}`,
-      };
-
-      if (headOnly) {
-        return new Response(null, { status: 206, headers });
-      }
-
-      const stream = fs.createReadStream(filePath, { start, end });
-      return new Response(nodeToWebStream(stream), { status: 206, headers });
-    }
-
-    const headers = {
-      ...common,
-      "content-length": String(total),
-    };
-
-    if (headOnly) {
-      return new Response(null, { status: 200, headers });
-    }
-
-    const stream = fs.createReadStream(filePath);
-    return new Response(nodeToWebStream(stream), { status: 200, headers });
-  } catch (err) {
-    console.error("download error:", err);
-    return badRequest("Internal error", 500);
-  }
-}
+export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
-  return sendFile(req, false);
-}
-export async function HEAD(req: NextRequest) {
-  return sendFile(req, true);
+  try {
+    const url = new URL(req.url);
+    const jobId = url.searchParams.get("job");
+    const file  = url.searchParams.get("file");
+
+    if (!jobId || !file) {
+      return NextResponse.json({ ok: false, error: "Missing job or file" }, { status: 400, headers: { "cache-control": "no-store" } });
+    }
+
+    const baseDir = "/app/temp";
+    const dir = path.join(baseDir, `output_${jobId}`);
+    const name = safeFileName(file);
+    const fullPath = path.join(dir, name);
+
+    try {
+      const stat = await fsp.stat(fullPath);
+      if (!stat.isFile()) throw new Error("Not a file");
+    } catch {
+      return NextResponse.json({ ok: false, error: "File not found" }, { status: 404, headers: { "cache-control": "no-store" } });
+    }
+
+    const stream = fs.createReadStream(fullPath);
+    const headers = new Headers({
+      "content-type": "video/mp4",
+      "accept-ranges": "bytes",
+      "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
+      "pragma": "no-cache",
+      "expires": "0",
+      "x-accel-buffering": "no",
+    });
+
+    const dispName = name;
+    headers.set(
+      "content-disposition",
+      `attachment; filename="${dispName}"; filename*=UTF-8''${encodeRFC5987(dispName)}`
+    );
+
+    return new NextResponse(stream as any, { status: 200, headers });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ ok: false, error: msg || "Internal error" }, { status: 500, headers: { "cache-control": "no-store" } });
+  }
 }
