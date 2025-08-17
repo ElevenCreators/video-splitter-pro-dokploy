@@ -1,45 +1,44 @@
-import fluent from "fluent-ffmpeg";
-import fs from "node:fs";
-import { spawnSync } from "node:child_process";
+﻿import ffmpegFluent from "fluent-ffmpeg";
+import fs from "fs";
+import path from "path";
 
-let configured = false;
+// Export principal para usar en routes: import { ffmpeg } from "@/lib/ffmpeg"
+export const ffmpeg = ffmpegFluent;
 
-function exists(p?: string) {
-  if (!p) return false;
-  try { return fs.existsSync(p); } catch { return false; }
-}
+const CANDIDATES = [
+  process.env.FFMPEG_PATH || "",
+  "/usr/local/bin/ffmpeg",
+  "/usr/bin/ffmpeg",
+  "/bin/ffmpeg",
+].filter(Boolean);
 
-function which(cmd: string) {
+let resolved = "";
+
+for (const p of CANDIDATES) {
   try {
-    const out = spawnSync("which", [cmd], { encoding: "utf8" }).stdout?.trim();
-    return out || "";
-  } catch { return ""; }
+    if (p && fs.existsSync(p)) {
+      ffmpegFluent.setFfmpegPath(p);
+      resolved = p;
+      break;
+    }
+  } catch {}
 }
 
-export function getFfmpeg() {
-  // Evita buscar ffmpeg durante el build del contenedor
-  if (configured || process.env.SKIP_FFMPEG_CHECK) return fluent;
-
-  const candidates = [
-    process.env.FFMPEG_PATH,                      // si la seteas en Dokploy
-    "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg",
-    which("ffmpeg"),
-  ].filter(Boolean) as string[];
-
-  const found = candidates.find(exists);
-  if (found) {
-    fluent.setFfmpegPath(found);
-    const probe = process.env.FFPROBE_PATH || found.replace(/ffmpeg$/, "ffprobe");
-    if (exists(probe)) fluent.setFfprobePath(probe);
-    console.log("✅ Using FFmpeg:", found);
-  } else {
-    console.warn("⚠️ FFmpeg not found at import time; will rely on runtime PATH.");
+if (!resolved) {
+  // No explotes aquí; el route puede simular o reportar error luego.
+  console.warn("⚠️ FFmpeg path not resolved at init");
+} else {
+  // Verificación segura: SOLO -version (nunca uses process.argv)
+  try {
+    const { spawnSync } = require("node:child_process");
+    const out = spawnSync(resolved, ["-version"], { encoding: "utf8" });
+    if (out.error) {
+      console.warn("⚠️ FFmpeg check error:", out.error.message);
+    } else {
+      const first = (out.stdout || "").split("\n")[0]?.trim();
+      console.log("✅ Using FFmpeg:", resolved, first ? `| ${first}` : "");
+    }
+  } catch (e) {
+    console.warn("⚠️ FFmpeg version check failed:", e instanceof Error ? e.message : String(e));
   }
-
-  configured = true;
-  return fluent;
 }
-
-// 👉 Exportamos AMBOS estilos para evitar cambios en el resto del código
-export const ffmpeg = getFfmpeg();
-export default ffmpeg;
