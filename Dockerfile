@@ -11,7 +11,7 @@ RUN bun run build
 # --- Stage 2: runtime = ffmpeg + (copio bun y mi app)
 # Elige una etiqueta estable. Ej: 7.1-ubuntu2404 o 7.1-alpine320
 ARG FFMPEG_TAG=7.1-ubuntu2404
-FROM jrottenberg/ffmpeg:${FFMPEG_TAG} AS runtime
+FROM jrottenberg/ffmpeg:7.1-ubuntu2404 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
