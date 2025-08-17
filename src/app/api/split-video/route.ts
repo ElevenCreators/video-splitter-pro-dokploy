@@ -4,7 +4,10 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
-import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
+import {
+  ReadableStream as WebReadableStream,
+  ReadableStreamDefaultReader,
+} from "node:stream/web";
 import { createJob, setProgress, completeJob, failJob, gc } from "@/lib/jobStore";
 import { startCleaner, scheduleDeletion } from "@/lib/tempCleaner";
 
@@ -35,11 +38,28 @@ startCleaner();
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+// Convierte un WebReadableStream<Uint8Array> a Node Readable sin usar `any`
+function webToNodeReadable(web: WebReadableStream<Uint8Array>): Readable {
+  const iterator = (async function* () {
+    const reader: ReadableStreamDefaultReader<Uint8Array> = web.getReader();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) yield Buffer.from(value);
+      }
+    } finally {
+      try { reader.releaseLock(); } catch {}
+    }
+  })();
+  return Readable.from(iterator);
+}
+
 export async function POST(request: NextRequest) {
   try {
     gc();
 
-    // --- LECTURA ROBUSTA DEL FORM DATA (móviles / conexiones lentas) ---
+    // 1) Leer form-data de forma compatible con móviles
     let formData: FormData;
     try {
       formData = await request.formData();
@@ -50,12 +70,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, error: "Invalid multipart/form-data" }, { status: 400 });
     }
 
-    const file = formData.get("video");
-    if (!file || !(file instanceof File)) {
+    const fileEntry = formData.get("video");
+    if (!fileEntry || !(fileEntry instanceof File)) {
       return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
     }
 
-    const filename = file.name || "upload.bin";
+    const filename = fileEntry.name || "upload.bin";
     const segmentSeconds = Math.max(1, Number((formData.get("segmentLength") as string) || "10") || 10);
     const allowReencode = ["1","true","yes","on"].includes(String(formData.get("allowReencode") ?? "0").toLowerCase());
 
@@ -73,23 +93,20 @@ export async function POST(request: NextRequest) {
     createJob(jobId);
     setProgress(jobId, 1);
 
-    // --- STREAM del archivo a disco sin cargar en memoria ---
+    // 2) Stream del archivo a disco sin buffers gigantes (compatible móvil)
     try {
-      const webStream = file.stream() as unknown as NodeWebReadableStream;
-      const nodeStream = (Readable as any).fromWeb
-        ? (Readable as any).fromWeb(webStream)
-        : Readable.from((async function* () {
-            const reader = (webStream as any).getReader();
-            try {
-              while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                if (value) yield Buffer.from(value);
-              }
-            } finally {
-              reader.releaseLock?.();
-            }
-          })());
+      const webStream = fileEntry.stream() as unknown as WebReadableStream<Uint8Array>;
+      let nodeStream: Readable;
+
+      // Usa Readable.fromWeb si existe y está tipado
+      const R = Readable as typeof Readable & {
+        fromWeb?: (rs: WebReadableStream<Uint8Array>) => Readable;
+      };
+      if (typeof R.fromWeb === "function") {
+        nodeStream = R.fromWeb(webStream);
+      } else {
+        nodeStream = webToNodeReadable(webStream);
+      }
 
       await new Promise<void>((resolve, reject) => {
         const ws = fs.createWriteStream(inputPath);
@@ -128,7 +145,6 @@ export async function POST(request: NextRequest) {
           "-movflags", "+faststart",
         ]);
       } else {
-        // Re-encode conservando parámetros "razonables" (igual que tenías)
         cmd.outputOptions([
           "-y",
           "-loglevel", "error",
@@ -164,13 +180,11 @@ export async function POST(request: NextRequest) {
           }
         })
         .on("stderr", (line: string) => {
-          // útil para depurar codecs raros que llegan desde móvil
           if (line) console.log("ffmpeg stderr:", line);
         })
         .on("end", async () => {
           if (finished) return;
           const names = (await fsp.readdir(outDir)).filter(n => n.endsWith(".mp4")).sort();
-          console.log(`📦 Post-processing [${mode}]: ${names.length} segment(s)`);
 
           if (names.length === 0 && mode === "copy" && allowReencode && !triedReencode) {
             triedReencode = true;
