@@ -217,15 +217,16 @@ export default function VideoSplitter() {
           className="accent-brand-500 h-4 w-4"
         />
         <span className="flex items-center gap-1">
-          Force re-encode
+          Re-encode si es necesario
           <span
             className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-white/10 text-gray-300 cursor-help"
-            title="Activates a second, slower pass that recodes the video if the quick cut fails. Keeps original audio and uses high quality."
+            title="Activa una segunda pasada más lenta que recodifica el video si el corte rápido falla. Mantiene audio original y usa calidad alta (CRF 18, +faststart)."
             aria-label="Más info"
           >i</span>
         </span>
         <span className="tooltip">
-          If fast cutting (without re-encoding) fails or returns 0 segments, enabling this option will attempt a second pass, re-encoding only the video and keeping the original audio to preserve quality. It is slower and uses more CPU.
+          Si el corte rápido (sin recodificar) falla o arroja 0 segmentos, habilitar esta opción intentará una segunda pasada recodificando solo el video (x264 CRF 18) y
+          manteniendo el audio original (<em>copy</em>) para conservar calidad. Es más lento y usa más CPU.
         </span>
       </label>
 
@@ -305,4 +306,3 @@ export default function VideoSplitter() {
     </div>
   )
 }
-
