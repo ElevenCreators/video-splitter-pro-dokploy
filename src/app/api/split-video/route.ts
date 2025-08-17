@@ -6,50 +6,68 @@ import path from "node:path";
 import { createJob, setProgress, completeJob, failJob, gc } from "@/lib/jobStore";
 import { startCleaner, scheduleDeletion } from "@/lib/tempCleaner";
 
-function setupFFmpegPath() {
+// Tipos auxiliares (evitan "any")
+type FFmpegAPI = typeof ffmpeg & { setFfmpegPath: (p: string) => void };
+interface FFmpegProgress {
+  frames?: number;
+  currentFps?: number;
+  currentKbps?: number;
+  targetSize?: number;
+  timemark?: string;
+  percent?: number;
+}
+
+function getErrorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  try { return JSON.stringify(e); } catch { return String(e); }
+}
+
+/** Configura path de ffmpeg sin usar ts-ignore */
+function setupFFmpegPath(): boolean {
   try {
     console.log("🔍 Setting up FFmpeg path...");
     if (process.env.SKIP_FFMPEG_CHECK) {
       console.log("⏭️  SKIP_FFMPEG_CHECK=1 → check diferido a runtime");
       return true;
     }
+    const api = ffmpeg as FFmpegAPI;
+
     if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
-      // @ts-ignore
-      ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH);
+      api.setFfmpegPath(process.env.FFMPEG_PATH);
       console.log("✅ Using environment FFmpeg:", process.env.FFMPEG_PATH);
       return true;
     }
     const systemPaths = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg"];
-    for (const p of systemPaths) {
-      if (fs.existsSync(p)) {
-        // @ts-ignore
-        ffmpeg.setFfmpegPath(p);
-        console.log("✅ Found system FFmpeg:", p);
+    for (const pth of systemPaths) {
+      if (fs.existsSync(pth)) {
+        api.setFfmpegPath(pth);
+        console.log("✅ Found system FFmpeg:", pth);
         return true;
       }
     }
     console.warn("⚠️ FFmpeg not found at import time; relying on PATH at runtime.");
     return true;
   } catch (e) {
-    console.warn("⚠️ setupFFmpegPath error:", e);
+    console.warn("⚠️ setupFFmpegPath error:", getErrorMessage(e));
     return true;
   }
 }
 
 const ffmpegReady = setupFFmpegPath();
-startCleaner();  // ← arranca el autocleaner en background
+startCleaner(); // autocleaner en background
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   try {
-    gc();
+    gc(); // limpia jobs viejos del store en memoria
 
     const formData = await request.formData();
     const file = formData.get("video") as File | null;
-    const segmentStr = (formData.get("segmentLength") as string) || "10";
-    const segmentSeconds = Math.max(1, Number(segmentStr) || 10);
+    const segmentSeconds = Math.max(1, Number((formData.get("segmentLength") as string) || "10") || 10);
+
     if (!file) {
       return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
     }
@@ -68,8 +86,7 @@ export async function POST(request: NextRequest) {
     const outDir = path.join(baseDir, `output_${jobId}`);
     await fsp.mkdir(outDir, { recursive: true });
 
-    const buf = Buffer.from(await file.arrayBuffer());
-    await fsp.writeFile(inputPath, buf);
+    await fsp.writeFile(inputPath, Buffer.from(await file.arrayBuffer()));
 
     createJob(jobId);
 
@@ -80,13 +97,14 @@ export async function POST(request: NextRequest) {
         "-f", "segment", "-segment_time", String(segmentSeconds),
         "-reset_timestamps", "1",
       ])
-      .on("start", (cmd: string) => {
-        console.log("🎬 FFmpeg started:", cmd);
+      .on("start", (cmdLine: string) => {
+        console.log("🎬 FFmpeg started:", cmdLine);
         setProgress(jobId, 5);
       })
-      .on("progress", (p: any) => {
-        const next = p?.percent ? Math.min(95, Math.floor(p.percent)) : undefined;
-        if (next) setProgress(jobId, next);
+      .on("progress", (p: FFmpegProgress) => {
+        if (typeof p.percent === "number") {
+          setProgress(jobId, Math.min(95, Math.floor(p.percent)));
+        }
       })
       .on("end", async () => {
         try {
@@ -94,29 +112,38 @@ export async function POST(request: NextRequest) {
           const names = (await fsp.readdir(outDir)).filter(n => n.endsWith(".mp4")).sort();
           const files = names.map(name => ({
             name,
-            url: `/api/download?job=${encodeURIComponent(jobId)}&file=${encodeURIComponent(name)}`,
+            url: `/api/download?job=${encodeURIComponent(jobId)}&file=${encodeURIComponent(name)}`
           }));
           completeJob(jobId, files);
-
-          // borra input y programa borrado de outputs por TTL
-          try { await fsp.rm(inputPath, { force: true }); } catch {}
+          // Borra input; schedule para outputs
+          try {
+            if (fs.existsSync(inputPath)) { await fsp.rm(inputPath, { force: true }); }
+          } catch {}
           scheduleDeletion(jobId, outDir);
-        } catch (e: any) {
-          console.error("❌ Post-processing error:", e);
-          failJob(jobId, e?.message || "post-processing");
+        } catch (e) {
+          console.error("❌ Post-processing error:", getErrorMessage(e));
+          failJob(jobId, getErrorMessage(e));
         }
       })
-      .on("error", (err: any) => {
-        console.error("❌ FFmpeg error:", err);
-        failJob(jobId, String(err?.message || err));
-        try { fs.existsSync(inputPath) && fs.rmSync(inputPath); } catch {}
-        try { fs.existsSync(outDir) && fs.rmSync(outDir, { recursive: true }); } catch {}
+      .on("error", (err: unknown) => {
+        console.error("❌ FFmpeg error:", getErrorMessage(err));
+        failJob(jobId, getErrorMessage(err));
+        // Limpieza sin "unused-expressions"
+        try {
+          if (fs.existsSync(inputPath)) { fs.rmSync(inputPath, { force: true }); }
+        } catch {}
+        try {
+          if (fs.existsSync(outDir)) { fs.rmSync(outDir, { recursive: true, force: true }); }
+        } catch {}
       });
 
     command.run();
     return NextResponse.json({ ok: true, jobId }, { status: 202 });
-  } catch (error: any) {
-    console.error("❌ API error:", error);
-    return NextResponse.json({ ok: false, error: error?.message || "Internal server error" }, { status: 500 });
+  } catch (error: unknown) {
+    console.error("❌ API error:", getErrorMessage(error));
+    return NextResponse.json(
+      { ok: false, error: getErrorMessage(error) || "Internal server error" },
+      { status: 500 }
+    );
   }
 }
