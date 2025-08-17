@@ -1,8 +1,8 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ffmpeg } from "@/lib/ffmpeg";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import path from "node:path";
+import path from "node:path";\nimport { pipeline } from "node:stream/promises";\nimport { Readable } from "node:stream";
 import { createJob, setProgress, completeJob, failJob, gc } from "@/lib/jobStore";
 import { startCleaner, scheduleDeletion } from "@/lib/tempCleaner";
 
@@ -61,7 +61,14 @@ export async function POST(request: NextRequest) {
     const inputPath = path.join(baseDir, `input_${jobId}_${safeName}`);
     const outDir = path.join(baseDir, `output_${jobId}`);
     await fsp.mkdir(outDir, { recursive: true });
-    await fsp.writeFile(inputPath, Buffer.from(await file.arrayBuffer()));
+    {
+  // Escribir el upload a disco en streaming (sin cargar todo en RAM)
+  const webStream = file.stream(); // ReadableStream (Web)
+  // @ts-expect-error types mismatch Node/Web
+  const nodeStream = Readable.fromWeb(webStream);
+  const write = fs.createWriteStream(inputPath);
+  await pipeline(nodeStream, write);
+}
 
     createJob(jobId);
 
@@ -77,7 +84,7 @@ export async function POST(request: NextRequest) {
           "-loglevel", "error",
           "-nostdin",
 
-          // Solo V/A; descarta data/subs/metadata problemáticos
+          // Solo V/A; descarta data/subs/metadata problem�ticos
           "-map", "0:v:0",
           "-map", "0:a:0?",
           "-dn",
@@ -124,7 +131,7 @@ export async function POST(request: NextRequest) {
       cmd
         .on("stderr", (line: string) => console.log("ffmpeg stderr:", line))
         .on("start", (line: string) => {
-          console.log(`🎬 FFmpeg started [${mode}]:`, line);
+          console.log(`?? FFmpeg started [${mode}]:`, line);
           setProgress(jobId, mode === "copy" ? 5 : 10);
         })
         .on("progress", (p: FFmpegProgress) => {
@@ -137,10 +144,10 @@ export async function POST(request: NextRequest) {
         .on("end", async () => {
           if (finished) return;
           const names = (await fsp.readdir(outDir)).filter(n => n.endsWith(".mp4")).sort();
-          console.log(`📦 Post-processing [${mode}]: ${names.length} segment(s)`);
+          console.log(`?? Post-processing [${mode}]: ${names.length} segment(s)`);
           if (names.length === 0 && mode === "copy" && allowReencode && !triedReencode) {
             triedReencode = true;
-            console.warn("⚠️ 0 segments with copy; retrying with re-encode...");
+            console.warn("?? 0 segments with copy; retrying with re-encode...");
             run("reencode");
             return;
           }
@@ -154,15 +161,15 @@ export async function POST(request: NextRequest) {
 
           try { if (fs.existsSync(inputPath)) await fsp.rm(inputPath, { force: true }); } catch {}
           scheduleDeletion(jobId, outDir);
-          console.log(`✅ Job done: ${jobId} [${mode}]`);
+          console.log(`? Job done: ${jobId} [${mode}]`);
         })
         .on("error", async (err: unknown) => {
           const msg = getErrorMessage(err);
-          console.error(`❌ FFmpeg error [${mode}]:`, msg);
+          console.error(`? FFmpeg error [${mode}]:`, msg);
 
           if (!finished && mode === "copy" && allowReencode && !triedReencode) {
             triedReencode = true;
-            console.warn("⚠️ Copy failed; retrying with re-encode...");
+            console.warn("?? Copy failed; retrying with re-encode...");
             run("reencode");
             return;
           }
@@ -184,3 +191,5 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
+
+
