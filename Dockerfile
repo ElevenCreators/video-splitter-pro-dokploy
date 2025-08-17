@@ -10,16 +10,19 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl bash \
   && rm -rf /var/lib/apt/lists/*
 
-# deps primero (usa tu lockfile commiteado)
+# evita que tu helper busque ffmpeg durante el build
+ENV SKIP_FFMPEG_CHECK=1
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# deps primero
 COPY package.json bun.lock* ./
 RUN --mount=type=cache,target=/root/.bun bun install --frozen-lockfile
 
 # código y build
 COPY . .
-ENV NEXT_TELEMETRY_DISABLED=1
-RUN bun run build
+RUN bun run build  # Next genera .next
 
-# --- Stage 2: runtime = ffmpeg 7.1 + (copio bun 1.2.19 y mi app) ---
+# --- Stage 2: runtime = ffmpeg 7.1 + (copio bun y mi app) ---
 FROM jrottenberg/ffmpeg:${FFMPEG_TAG} AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
@@ -28,20 +31,23 @@ ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/* || true
 
-# bun del builder (la misma 1.2.19)
+# bun del builder (misma versión)
 COPY --from=builder /usr/local/bin/bun /usr/local/bin/
 
-# artefactos de ejecución
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/build ./build
+# artefactos de ejecución (Next)
+COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/bun.lock* ./
+# si tienes /public o next.config.*, cópialos también:
+# COPY --from=builder /app/public ./public
+# COPY --from=builder /app/next.config.* ./
 
-# verificación: debe imprimir "ffmpeg version 7.1 ..."
+# node_modules: si tu build los necesita en runtime, cópialos
+COPY --from=builder /app/node_modules ./node_modules
+
+# verificación (aquí sí hay ffmpeg)
 RUN command -v ffmpeg && ffmpeg -version | head -1
-
-# Si tu helper auto-detecta 'which ffmpeg', no necesitas setear estas vars.
-# Si prefieres fijarlas, en esta imagen suele ser /usr/bin:
+# en estas imágenes suele ser /usr/bin/ffmpeg:
 # ENV FFMPEG_PATH=/usr/bin/ffmpeg
 # ENV FFPROBE_PATH=/usr/bin/ffprobe
 
