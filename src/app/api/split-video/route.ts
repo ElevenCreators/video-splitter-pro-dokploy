@@ -1,4 +1,5 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+﻿import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
+import { NextRequest, NextResponse } from "next/server";
 import { ffmpeg } from "@/lib/ffmpeg";
 import type { FfmpegCommand } from "fluent-ffmpeg";
 import fs from "node:fs";
@@ -46,7 +47,7 @@ async function saveMultipartToDisk(req: NextRequest, targetDir: string, tmpBase:
 
   const webBody = req.body;
   if (!webBody) throw new Error("Empty body");
-  const nodeStream = Readable.fromWeb(webBody as unknown as ReadableStream<Uint8Array>);
+  const nodeStream = Readable.fromWeb(webBody as unknown as NodeWebReadableStream);
 
   const fields: Record<string, string> = {};
   let originalName = "upload.bin";
@@ -229,3 +230,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
+
