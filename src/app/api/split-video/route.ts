@@ -1,4 +1,5 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+﻿// src/app/api/split-video/route.ts
+import { NextRequest, NextResponse } from "next/server";
 import { ffmpeg } from "@/lib/ffmpeg";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -23,13 +24,18 @@ function getErrorMessage(e: unknown): string {
 function setupFFmpegPath(): boolean {
   try {
     const api = ffmpeg as FFmpegAPI;
-    if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) { api.setFfmpegPath(process.env.FFMPEG_PATH); return true; }
+    if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
+      api.setFfmpegPath(process.env.FFMPEG_PATH);
+      return true;
+    }
     for (const p of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg"]) {
       if (fs.existsSync(p)) { api.setFfmpegPath(p); return true; }
     }
     console.warn("⚠️ FFmpeg path not resolved at init");
     return true;
-  } catch { return true; }
+  } catch {
+    return true;
+  }
 }
 
 const ffmpegReady = setupFFmpegPath();
@@ -59,7 +65,7 @@ export async function POST(request: NextRequest) {
   try {
     gc();
 
-    // 1) Leer form-data de forma compatible con móviles
+    // 1) Leer form-data (compatible con móviles)
     let formData: FormData;
     try {
       formData = await request.formData();
@@ -77,10 +83,12 @@ export async function POST(request: NextRequest) {
 
     const filename = fileEntry.name || "upload.bin";
     const segmentSeconds = Math.max(1, Number((formData.get("segmentLength") as string) || "10") || 10);
-    const allowReencode = ["1","true","yes","on"].includes(String(formData.get("allowReencode") ?? "0").toLowerCase());
+    const allowReencode = ["1", "true", "yes", "on"].includes(String(formData.get("allowReencode") ?? "0").toLowerCase());
+    const exactSegments = ["1", "true", "yes", "on"].includes(String(formData.get("exactSegments") ?? "0").toLowerCase());
 
-    const exactSegments = ["1","true","yes","on"].includes(String(formData.get("exactSegments") ?? "0").toLowerCase());
-if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
+    if (!ffmpegReady) {
+      return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
+    }
 
     const baseDir = "/app/temp";
     await fsp.mkdir(baseDir, { recursive: true });
@@ -94,20 +102,17 @@ if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready
     createJob(jobId);
     setProgress(jobId, 1);
 
-    // 2) Stream del archivo a disco sin buffers gigantes (compatible móvil)
+    // 2) Guardar upload a disco con stream (sin cargar todo a RAM)
     try {
       const webStream = fileEntry.stream() as unknown as WebReadableStream<Uint8Array>;
-      let nodeStream: Readable;
 
-      // Usa Readable.fromWeb si existe y está tipado
+      // Usa Readable.fromWeb si existe y está tipado en tu Node; si no, fallback manual
       const R = Readable as typeof Readable & {
         fromWeb?: (rs: WebReadableStream<Uint8Array>) => Readable;
       };
-      if (typeof R.fromWeb === "function") {
-        nodeStream = R.fromWeb(webStream);
-      } else {
-        nodeStream = webToNodeReadable(webStream);
-      }
+      const nodeStream: Readable = typeof R.fromWeb === "function"
+        ? R.fromWeb(webStream)
+        : webToNodeReadable(webStream);
 
       await new Promise<void>((resolve, reject) => {
         const ws = fs.createWriteStream(inputPath);
@@ -124,47 +129,43 @@ if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready
     let finished = false;
     let triedReencode = false;
 
+    // 3) Ejecutar FFmpeg (copy -> fallback reencode)
     const buildAndRun = (mode: "copy" | "reencode") => {
       const outputPattern = path.join(outDir, "segment_%03d.mp4");
       const cmd = ffmpeg(inputPath).output(outputPattern);
 
+      // opciones comunes
+      const commonArgs: string[] = [
+        "-y",
+        "-loglevel", "error",
+        "-nostdin",
+        "-ignore_unknown", "1",        // ignora pistas desconocidas (iPhone, etc.)
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+        "-dn",
+        "-sn",
+        "-map_metadata", "-1",
+        "-f", "segment",
+        "-segment_time", String(segmentSeconds),
+        "-reset_timestamps", "1",
+        "-movflags", "+faststart",
+      ];
+
       if (mode === "copy") {
         cmd.outputOptions([
-          "-y",
-          "-loglevel", "error",
-          "-nostdin",
-          "-map", "0:v:0",
-          "-map", "0:a:0?",
-          "-dn",
-          "-sn",
-          "-map_metadata", "-1",
+          ...commonArgs,
           "-c:v", "copy",
           "-c:a", "copy",
-          "-f", "segment",
-          "-segment_time", String(segmentSeconds),
-          "-reset_timestamps", "1",
-          "-movflags", "+faststart",
         ]);
       } else {
         cmd.outputOptions([
-          "-y",
-          "-loglevel", "error",
-          "-nostdin",
-          "-map", "0:v:0",
-          "-map", "0:a:0?",
-          "-dn",
-          "-sn",
-          "-map_metadata", "-1",
+          ...commonArgs,
           "-c:v", "libx264",
           "-preset", "veryfast",
           "-crf", "23",
           "-pix_fmt", "yuv420p",
           "-c:a", "aac",
           "-b:a", "128k",
-          "-f", "segment",
-          "-segment_time", String(segmentSeconds),
-          "-reset_timestamps", "1",
-          "-movflags", "+faststart",
         ]);
       }
 
@@ -187,7 +188,8 @@ if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready
           if (finished) return;
           const names = (await fsp.readdir(outDir)).filter(n => n.endsWith(".mp4")).sort();
 
-          if (names.length === 0 && mode === "copy" && allowReencode && !triedReencode) {
+          // si copy no produjo segmentos, reintenta con reencode una vez
+          if (names.length === 0 && mode === "copy" && !triedReencode) {
             triedReencode = true;
             console.warn("⚠️ 0 segments with copy; retrying with re-encode...");
             buildAndRun("reencode");
@@ -207,12 +209,15 @@ if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready
         .on("error", async (err: unknown) => {
           const msg = getErrorMessage(err);
           console.error(`❌ FFmpeg error [${mode}]:`, msg);
-          if (!finished && mode === "copy" && allowReencode && !triedReencode) {
+
+          // si copy falla, reintenta reencode una vez (sin depender de allowReencode)
+          if (!finished && mode === "copy" && !triedReencode) {
             triedReencode = true;
             console.warn("⚠️ Copy failed; retrying with re-encode...");
             buildAndRun("reencode");
             return;
           }
+
           if (!finished) {
             finished = true;
             failJob(jobId, msg);
@@ -223,13 +228,20 @@ if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready
         .run();
     };
 
-    if (exactSegments) { buildAndRun("reencode"); } else { buildAndRun("copy"); }
-    return NextResponse.json({ ok: true, jobId }, { status: 202, headers: { "cache-control": "no-store" } });
+    // exactSegments fuerza re-encode; si no, empieza con copy y cae a re-encode si hace falta
+    if (exactSegments) {
+      buildAndRun("reencode");
+    } else {
+      buildAndRun("copy");
+    }
+
+    return NextResponse.json(
+      { ok: true, jobId },
+      { status: 202, headers: { "cache-control": "no-store" } }
+    );
   } catch (error: unknown) {
     const msg = getErrorMessage(error);
     console.error("❌ Handler error:", msg);
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
-
-
