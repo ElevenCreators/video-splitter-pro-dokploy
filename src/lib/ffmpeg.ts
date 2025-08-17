@@ -17,10 +17,11 @@ function which(cmd: string) {
 }
 
 export function getFfmpeg() {
+  // Evita buscar ffmpeg durante el build del contenedor
   if (configured || process.env.SKIP_FFMPEG_CHECK) return fluent;
 
   const candidates = [
-    process.env.FFMPEG_PATH,                // si la seteas en Dokploy
+    process.env.FFMPEG_PATH,                      // si la seteas en Dokploy
     "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg",
     which("ffmpeg"),
   ].filter(Boolean) as string[];
@@ -32,14 +33,13 @@ export function getFfmpeg() {
     if (exists(probe)) fluent.setFfprobePath(probe);
     console.log("✅ Using FFmpeg:", found);
   } else {
-    console.warn("⚠️ FFmpeg not found at build/import time; will rely on runtime PATH.");
+    console.warn("⚠️ FFmpeg not found at import time; will rely on runtime PATH.");
   }
 
   configured = true;
   return fluent;
 }
 
-// Usa así en tu código:
-// import { getFfmpeg } from "@/lib/ffmpeg";
-// const ffmpeg = getFfmpeg();
-export default getFfmpeg();
+// 👉 Exportamos AMBOS estilos para evitar cambios en el resto del código
+export const ffmpeg = getFfmpeg();
+export default ffmpeg;
