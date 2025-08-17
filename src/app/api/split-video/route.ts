@@ -1,12 +1,10 @@
-﻿import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { ffmpeg } from "@/lib/ffmpeg";
-import type { FfmpegCommand } from "fluent-ffmpeg";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
-import Busboy from "busboy";
+import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import { createJob, setProgress, completeJob, failJob, gc } from "@/lib/jobStore";
 import { startCleaner, scheduleDeletion } from "@/lib/tempCleaner";
 
@@ -19,10 +17,6 @@ function getErrorMessage(e: unknown): string {
   try { return JSON.stringify(e); } catch { return String(e); }
 }
 
-function safeName(name: string): string {
-  return name.replace(/[^\w.\- ]+/g, "_").replace(/\s+/g, " ").trim();
-}
-
 function setupFFmpegPath(): boolean {
   try {
     const api = ffmpeg as FFmpegAPI;
@@ -30,51 +24,9 @@ function setupFFmpegPath(): boolean {
     for (const p of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg"]) {
       if (fs.existsSync(p)) { api.setFfmpegPath(p); return true; }
     }
+    console.warn("⚠️ FFmpeg path not resolved at init");
     return true;
   } catch { return true; }
-}
-
-async function saveMultipartToDisk(req: NextRequest, targetDir: string, tmpBase: string, maxBytes: number) {
-  await fsp.mkdir(targetDir, { recursive: true });
-
-  const headersObj = Object.fromEntries(req.headers.entries());
-  if (!("content-type" in headersObj)) throw new Error("Missing Content-Type");
-
-  const bb = Busboy({
-    headers: headersObj,
-    limits: { files: 1, fileSize: maxBytes },
-  });
-
-  const webBody = req.body;
-  if (!webBody) throw new Error("Empty body");
-  const nodeStream = Readable.fromWeb(webBody as unknown as NodeWebReadableStream);
-
-  const fields: Record<string, string> = {};
-  let originalName = "upload.bin";
-  const tmpPath = path.join(targetDir, `${tmpBase}.bin`);
-
-  const fileDone = new Promise<void>((resolve, reject) => {
-    bb.on("file", (_fieldname, file, info) => {
-      originalName = info.filename ? safeName(info.filename) : originalName;
-      const ws = fs.createWriteStream(tmpPath);
-      file.on("limit", () => reject(new Error("File too large")));
-      file.on("error", reject);
-      ws.on("error", reject);
-      ws.on("finish", resolve);
-      file.pipe(ws);
-    });
-    bb.on("field", (name, val) => { fields[name] = String(val); });
-    bb.on("error", reject);
-    bb.on("finish", () => {
-      // Si no hubo file, resolve igual (lo detectamos después)
-      if (!fs.existsSync(tmpPath)) reject(new Error("No file field found"));
-    });
-  });
-
-  nodeStream.pipe(bb);
-  await fileDone;
-
-  return { tmpPath, fields, originalName };
 }
 
 const ffmpegReady = setupFFmpegPath();
@@ -87,43 +39,76 @@ export async function POST(request: NextRequest) {
   try {
     gc();
 
-    if (!ffmpegReady) {
-      return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
+    // --- LECTURA ROBUSTA DEL FORM DATA (móviles / conexiones lentas) ---
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch (e) {
+      const ua = request.headers.get("user-agent") || "unknown";
+      const ct = request.headers.get("content-type") || "unknown";
+      console.error("❌ formData() failed", { ua, ct, error: getErrorMessage(e) });
+      return NextResponse.json({ ok: false, error: "Invalid multipart/form-data" }, { status: 400 });
     }
+
+    const file = formData.get("video");
+    if (!file || !(file instanceof File)) {
+      return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
+    }
+
+    const filename = file.name || "upload.bin";
+    const segmentSeconds = Math.max(1, Number((formData.get("segmentLength") as string) || "10") || 10);
+    const allowReencode = ["1","true","yes","on"].includes(String(formData.get("allowReencode") ?? "0").toLowerCase());
+
+    if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
 
     const baseDir = "/app/temp";
     await fsp.mkdir(baseDir, { recursive: true });
 
     const ts = Date.now();
     const jobId = `${ts}_${Math.random().toString(36).slice(2, 8)}`;
+    const inputPath = path.join(baseDir, `input_${jobId}_${filename}`);
     const outDir = path.join(baseDir, `output_${jobId}`);
     await fsp.mkdir(outDir, { recursive: true });
 
-    const maxFile = Number(process.env.MAX_FILE_SIZE ?? 4 * 1024 * 1024 * 1024); // 4GiB default
-
-    // --- Streaming upload a disco (sin cargar en RAM) ---
-    const { tmpPath, fields, originalName } = await saveMultipartToDisk(
-      request,
-      baseDir,
-      `input_${jobId}`,
-      maxFile
-    );
-
-    const finalName = safeName(originalName);
-    const inputPath = path.join(baseDir, `input_${jobId}_${finalName}`);
-    await fsp.rename(tmpPath, inputPath);
-
-    const segmentSeconds = Math.max(1, Number(fields["segmentLength"] ?? "10") || 10);
-    const allowReencode = ["1","true","yes","on"].includes(String(fields["allowReencode"] ?? "0").toLowerCase());
-
     createJob(jobId);
+    setProgress(jobId, 1);
+
+    // --- STREAM del archivo a disco sin cargar en memoria ---
+    try {
+      const webStream = file.stream() as unknown as NodeWebReadableStream;
+      const nodeStream = (Readable as any).fromWeb
+        ? (Readable as any).fromWeb(webStream)
+        : Readable.from((async function* () {
+            const reader = (webStream as any).getReader();
+            try {
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (value) yield Buffer.from(value);
+              }
+            } finally {
+              reader.releaseLock?.();
+            }
+          })());
+
+      await new Promise<void>((resolve, reject) => {
+        const ws = fs.createWriteStream(inputPath);
+        nodeStream.on("error", reject);
+        ws.on("error", reject);
+        ws.on("finish", resolve);
+        nodeStream.pipe(ws);
+      });
+    } catch (e) {
+      console.error("❌ failed to write upload to disk:", getErrorMessage(e));
+      return NextResponse.json({ ok: false, error: "Failed to save upload" }, { status: 500 });
+    }
 
     let finished = false;
     let triedReencode = false;
 
     const buildAndRun = (mode: "copy" | "reencode") => {
-      const outPattern = path.join(outDir, "segment_%03d.mp4");
-      const cmd: FfmpegCommand = ffmpeg(inputPath).output(outPattern);
+      const outputPattern = path.join(outDir, "segment_%03d.mp4");
+      const cmd = ffmpeg(inputPath).output(outputPattern);
 
       if (mode === "copy") {
         cmd.outputOptions([
@@ -143,6 +128,7 @@ export async function POST(request: NextRequest) {
           "-movflags", "+faststart",
         ]);
       } else {
+        // Re-encode conservando parámetros "razonables" (igual que tenías)
         cmd.outputOptions([
           "-y",
           "-loglevel", "error",
@@ -155,12 +141,13 @@ export async function POST(request: NextRequest) {
           "-c:v", "libx264",
           "-preset", "veryfast",
           "-crf", "23",
+          "-pix_fmt", "yuv420p",
           "-c:a", "aac",
           "-b:a", "128k",
-          "-movflags", "+faststart",
           "-f", "segment",
           "-segment_time", String(segmentSeconds),
           "-reset_timestamps", "1",
+          "-movflags", "+faststart",
         ]);
       }
 
@@ -175,6 +162,10 @@ export async function POST(request: NextRequest) {
             const scaled = Math.min(95, base + Math.floor(p.percent * 0.9));
             setProgress(jobId, scaled);
           }
+        })
+        .on("stderr", (line: string) => {
+          // útil para depurar codecs raros que llegan desde móvil
+          if (line) console.log("ffmpeg stderr:", line);
         })
         .on("end", async () => {
           if (finished) return;
@@ -193,25 +184,20 @@ export async function POST(request: NextRequest) {
             name,
             url: `/api/download?job=${encodeURIComponent(jobId)}&file=${encodeURIComponent(name)}`
           }));
-
           completeJob(jobId, files);
-
           try { if (fs.existsSync(inputPath)) await fsp.rm(inputPath, { force: true }); } catch {}
           scheduleDeletion(jobId, outDir);
-
           console.log(`✅ Job done: ${jobId} [${mode}]`);
         })
         .on("error", async (err: unknown) => {
           const msg = getErrorMessage(err);
           console.error(`❌ FFmpeg error [${mode}]:`, msg);
-
           if (!finished && mode === "copy" && allowReencode && !triedReencode) {
             triedReencode = true;
             console.warn("⚠️ Copy failed; retrying with re-encode...");
             buildAndRun("reencode");
             return;
           }
-
           if (!finished) {
             finished = true;
             failJob(jobId, msg);
@@ -226,8 +212,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, jobId }, { status: 202 });
   } catch (error: unknown) {
     const msg = getErrorMessage(error);
-    console.error("split-video 500:", msg);
+    console.error("❌ Handler error:", msg);
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
-
