@@ -36,3 +36,9 @@ HEALTHCHECK --interval=10s --timeout=4s --start-period=60s --retries=10 \
   CMD sh -c 'curl -fsS "http://localhost:${PORT:-3000}/api/health" || exit 1'
 
 CMD ["node","node_modules/next/dist/bin/next","start","-H","0.0.0.0","-p","3000"]
+ENTRYPOINT []
+EXPOSE 3000
+ENV HOST=0.0.0.0
+ENV PORT=3000
+HEALTHCHECK --interval=10s --timeout=4s --start-period=60s --retries=10 CMD curl -fsS "http://localhost:3000/api/health" || exit 1
+CMD ["node","node_modules/next/dist/bin/next","start","-H","0.0.0.0","-p","3000"]
