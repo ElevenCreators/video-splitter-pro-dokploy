@@ -139,7 +139,7 @@ export async function POST(request: NextRequest) {
         "-y",
         "-loglevel", "error",
         "-nostdin",
-        "-ignore_unknown", "1",        // ignora pistas desconocidas (iPhone, etc.)
+        "-ignore_unknown",        // ignora pistas desconocidas (iPhone, etc.)
         "-map", "0:v:0",
         "-map", "0:a:0?",
         "-dn",
@@ -245,3 +245,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
+
