@@ -1,55 +1,34 @@
-# syntax=docker/dockerfile:1.6
+# ... (tu Stage builder queda igual)
 
-# --- versiones pinneadas ---
-ARG BUN_VER=1.2.19
-ARG FFMPEG_TAG=7.1-ubuntu2404
-
-# --- Stage 1: builder (Bun 1.2.19) ---
-FROM oven/bun:${BUN_VER} AS builder
-WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl bash \
-  && rm -rf /var/lib/apt/lists/*
-
-# evita que tu helper busque ffmpeg durante el build
-ENV SKIP_FFMPEG_CHECK=1
-ENV NEXT_TELEMETRY_DISABLED=1
-
-# deps primero
-COPY package.json bun.lock* ./
-RUN --mount=type=cache,target=/root/.bun bun install --frozen-lockfile
-
-# código y build
-COPY . .
-RUN bun run build  # Next genera .next
-
-# --- Stage 2: runtime = ffmpeg 7.1 + (copio bun y mi app) ---
-FROM jrottenberg/ffmpeg:${FFMPEG_TAG} AS runtime
+FROM jrottenberg/ffmpeg:7.1-ubuntu2404 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PORT=3000
 
-# utilidades mínimas
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/* || true
 
-# bun del builder (misma versión)
+# Bun del builder
 COPY --from=builder /usr/local/bin/bun /usr/local/bin/
 
-# artefactos de ejecución (Next)
+# Artefactos Next
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/bun.lock* ./
-# si tienes /public o next.config.*, cópialos también:
+COPY --from=builder /app/node_modules ./node_modules
+# Si tienes /public o next.config.*:
 # COPY --from=builder /app/public ./public
 # COPY --from=builder /app/next.config.* ./
 
-# node_modules: si tu build los necesita en runtime, cópialos
-COPY --from=builder /app/node_modules ./node_modules
+# Crea carpeta temporal para tu API si la usas
+RUN mkdir -p /app/temp
 
-# verificación (aquí sí hay ffmpeg)
+# Verificación ffmpeg
 RUN command -v ffmpeg && ffmpeg -version | head -1
-# en estas imágenes suele ser /usr/bin/ffmpeg:
-# ENV FFMPEG_PATH=/usr/bin/ffmpeg
-# ENV FFPROBE_PATH=/usr/bin/ffprobe
 
 EXPOSE 3000
+
+# Healthcheck para que Dokploy detecte si el server realmente está arriba
+HEALTHCHECK --interval=20s --timeout=5s --retries=5 CMD curl -fsS http://127.0.0.1:${PORT}/ || exit 1
+
 CMD ["bun", "start"]
