@@ -14,13 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 ENV SKIP_FFMPEG_CHECK=1 \
     NEXT_TELEMETRY_DISABLED=1
 
-# deps primero (cache)
-COPY package.json bun.lock* ./
-RUN --mount=type=cache,target=/root/.bun bun install --frozen-lockfile
+# DESPUÉS (forma EXEC, sin shell)
+RUN ["/usr/local/bin/bun", "install", "--frozen-lockfile"]
+...
+RUN ["/usr/local/bin/bun", "run", "build"]
 
-# código y build (Next genera .next)
-COPY . .
-RUN bun run build
 
 # ========== STAGE 2: RUNTIME (Ubuntu 24.04 + FFmpeg 7.1 + Node 20) ==========
 FROM jrottenberg/ffmpeg:7.1-ubuntu2404 AS runtime
