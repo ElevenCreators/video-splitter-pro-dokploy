@@ -117,7 +117,8 @@ const result = await res.json();
 if (!res.ok || !result?.ok) {
   throw new Error(getErrorFromJson?.(result) ?? result?.error ?? 'Processing failed');
 }
-setProgress(100);
+setProgress(100);}
+      throw new Error(getErrorFromJson(result) ?? 'Processing failed')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setProgress(0)
@@ -292,7 +293,6 @@ setProgress(100);
     </div>
   )
 }
-
 
 
 
