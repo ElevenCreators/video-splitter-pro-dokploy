@@ -16,7 +16,6 @@ ENV SKIP_FFMPEG_CHECK=1 \
 
 # DESPUÉS (forma EXEC, sin shell)
 RUN ["/usr/local/bin/bun", "install", "--frozen-lockfile"]
-...
 RUN ["/usr/local/bin/bun", "run", "build"]
 
 
