@@ -10,6 +10,27 @@ interface VideoSegment {
   size?: number
 }
 
+type JobResponse = { ok: boolean; jobId?: string; error?: string }
+type LegacyResponse = { success: boolean; segments?: VideoSegment[]; error?: string }
+
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return typeof x === 'object' && x !== null
+}
+
+function isJobResponse(x: unknown): x is JobResponse {
+  return isRecord(x) && typeof x.ok === 'boolean'
+}
+
+function isLegacyResponse(x: unknown): x is LegacyResponse {
+  return isRecord(x) && 'success' in x
+}
+
+function getErrorFromJson(x: unknown): string | null {
+  if (!isRecord(x)) return null
+  const v = x['error']
+  return typeof v === 'string' ? v : null
+}
+
 export default function VideoSplitter() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [segmentLength, setSegmentLength] = useState(10)
@@ -43,23 +64,31 @@ export default function VideoSplitter() {
       const t = setInterval(async () => {
         try {
           const r = await fetch(`/api/progress?jobId=${encodeURIComponent(jobId)}`)
-          const j = await r.json()
-          if (!j?.ok) return
-          const p = typeof j.job?.progress === 'number' ? j.job.progress : 0
-          setProgress(p)
-          if (j.job?.status === 'done') {
+          const data: unknown = await r.json()
+
+          if (!isRecord(data) || data['ok'] !== true) return
+          const job = isRecord(data['job']) ? (data['job'] as Record<string, unknown>) : null
+          if (!job) return
+
+          const p = job['progress']
+          if (typeof p === 'number') setProgress(p)
+
+          const status = job['status']
+          if (status === 'done') {
             clearInterval(t)
-            setSegments(j.job.files || [])
+            const files = Array.isArray(job['files']) ? (job['files'] as VideoSegment[]) : []
+            setSegments(files)
             setProgress(100)
             resolvePoll()
-          }
-          if (j.job?.status === 'error') {
+          } else if (status === 'error') {
             clearInterval(t)
-            rejectPoll(new Error(j.job.error || 'Processing failed'))
+            const errMsg = typeof job['error'] === 'string' ? job['error'] as string : 'Processing failed'
+            rejectPoll(new Error(errMsg))
           }
         } catch (e) {
           clearInterval(t)
-          rejectPoll(e as Error)
+          const err = e instanceof Error ? e : new Error(String(e))
+          rejectPoll(err)
         }
       }, 500)
     })
@@ -79,27 +108,30 @@ export default function VideoSplitter() {
 
       const res = await fetch('/api/split-video', { method: 'POST', body: formData })
       if (!res.ok) {
-        const e = await res.json().catch(() => ({}))
-        throw new Error((e as any)?.error || 'Failed to process video')
+        const eJson: unknown = await res.json().catch(() => ({}))
+        const msg = getErrorFromJson(eJson) ?? 'Failed to process video'
+        throw new Error(msg)
       }
-      const result = await res.json()
+
+      const result: unknown = await res.json()
 
       // NUEVO FLUJO (jobs + polling)
-      if (result?.ok && result?.jobId) {
+      if (isJobResponse(result) && result.ok && typeof result.jobId === 'string') {
         await pollProgress(result.jobId)
         return
       }
 
       // FLUJO ANTIGUO (base64 en la respuesta)
-      if (result?.success && Array.isArray(result.segments)) {
+      if (isLegacyResponse(result) && result.success && Array.isArray(result.segments)) {
         setSegments(result.segments)
         setProgress(100)
         return
       }
 
-      throw new Error(result?.error || 'Processing failed')
+      throw new Error(getErrorFromJson(result) ?? 'Processing failed')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred')
+      const msg = err instanceof Error ? err.message : String(err)
+      setError(msg)
       setProgress(0)
     } finally {
       setIsProcessing(false)
