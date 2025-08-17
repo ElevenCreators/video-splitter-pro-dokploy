@@ -110,14 +110,8 @@ export default function VideoSplitter() {
       formData.append('video', selectedFile)
       formData.append('segmentLength', String(segmentLength))
       formData.append("allowReencode", allowReencode ? '1' : '0')
-      formData.append("exactSegments", (allowReencode ? "1" : "0"));
-      
-const res = await fetch('/api/split-video', { method: 'POST', body: formData });
-const result = await res.json();
-if (!res.ok || !result?.ok) {
-  throw new Error(getErrorFromJson?.(result) ?? result?.error ?? 'Processing failed');
-}
-setProgress(100);}
+      formData.append("exactSegments", (allowReencode ? "1" : "0")); setProgress(100); return
+      }
       throw new Error(getErrorFromJson(result) ?? 'Processing failed')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -293,7 +287,6 @@ setProgress(100);}
     </div>
   )
 }
-
 
 
 
