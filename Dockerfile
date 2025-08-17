@@ -1,49 +1,37 @@
-# --- Stage 0: proveedor de FFmpeg (version-pinned)
-ARG FFMPEG_TAG=7.1-alpine
-FROM jrottenberg/ffmpeg:${FFMPEG_TAG} AS ffmpeg
-
-# --- Stage 1: builder (Bun oficial)
-FROM oven/bun:1-alpine AS builder
+# --- Stage 1: builder (Bun)
+FROM oven/bun:1 AS builder
 WORKDIR /app
-
-# deps mínimas
-RUN apk add --no-cache bash curl
-
-# caché e instalación determinística
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates bash curl && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock* ./
 RUN --mount=type=cache,target=/root/.bun bun install --frozen-lockfile
-
-# copia código y build
 COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN bun run build
 
-# --- Stage 2: runtime (Bun + FFmpeg del stage 0)
-FROM oven/bun:1-alpine AS runtime
+# --- Stage 2: runtime = ffmpeg + (copio bun y mi app)
+# Elige una etiqueta estable. Ej: 7.1-ubuntu2404 o 7.1-alpine320
+ARG FFMPEG_TAG=7.1-ubuntu2404
+FROM jrottenberg/ffmpeg:${FFMPEG_TAG} AS runtime
 WORKDIR /app
-
 ENV NODE_ENV=production
 
-# Copiamos binarios exactos de FFmpeg y FFprobe
-COPY --from=ffmpeg /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/
+# Herramientas mínimas
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* || true
 
-# app no-root + temp
-RUN addgroup -S app && adduser -S app -G app \
- && mkdir -p /app/temp && chown -R app:app /app
+# Copio el binario de Bun desde el builder
+COPY --from=builder /usr/local/bin/bun /usr/local/bin/
 
-# sólo lo necesario para correr
+# Copio artefactos de ejecución
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/build ./build
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/bun.lock* ./
 
-# variables explícitas
-ENV FFMPEG_PATH=/usr/local/bin/ffmpeg
-ENV FFPROBE_PATH=/usr/local/bin/ffprobe
-ENV PATH="/usr/local/bin:${PATH}"
+# ffmpeg ya está en la imagen runtime; deja que tu helper lo encuentre con `which`
+# (o, si quieres fijarlo: ENV FFMPEG_PATH=/usr/local/bin/ffmpeg ; FFPROBE_PATH=/usr/local/bin/ffprobe)
 
-# verificación
-RUN $FFMPEG_PATH -version && $FFPROBE_PATH -version
+# Verificación útil durante el build
+RUN command -v ffmpeg && ffmpeg -version | head -1
 
 EXPOSE 3000
-USER app
 CMD ["bun", "start"]
