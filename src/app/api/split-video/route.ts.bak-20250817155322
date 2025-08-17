@@ -223,7 +223,7 @@ if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready
         .run();
     };
 
-    if (exactSegments) { buildAndRun("reencode"); } else { buildAndRun("copy"); }
+    exactSegments ? buildAndRun("reencode") : buildAndRun("copy");
     return NextResponse.json({ ok: true, jobId }, { status: 202, headers: { "cache-control": "no-store" } });
   } catch (error: unknown) {
     const msg = getErrorMessage(error);
@@ -231,5 +231,4 @@ if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
-
 
