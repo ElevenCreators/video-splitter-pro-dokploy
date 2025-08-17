@@ -18,14 +18,20 @@ function getErrorMessage(e: unknown): string {
 function setupFFmpegPath(): boolean {
   try {
     const api = ffmpeg as FFmpegAPI;
-    const envPath = process.env.FFMPEG_PATH;
-    if (envPath && fs.existsSync(envPath)) { api.setFfmpegPath(envPath); return true; }
-    for (const p of ["/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", "/bin/ffmpeg"]) {
-      if (fs.existsSync(p)) { api.setFfmpegPath(p); return true; }
+    if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
+      api.setFfmpegPath(process.env.FFMPEG_PATH);
+      return true;
     }
-    // devolvemos true para permitir modo simulación arriba si hiciera falta
+    for (const p of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg"]) {
+      if (fs.existsSync(p)) {
+        api.setFfmpegPath(p);
+        return true;
+      }
+    }
     return true;
-  } catch { return true; }
+  } catch {
+    return true;
+  }
 }
 
 const ffmpegReady = setupFFmpegPath();
@@ -40,31 +46,21 @@ export async function POST(request: NextRequest) {
 
     const formData = await request.formData();
     const file = formData.get("video") as File | null;
-    const segmentSeconds =
-      Math.max(1, Number((formData.get("segmentLength") as string) || "10") || 10);
+    const segmentSeconds = Math.max(1, Number((formData.get("segmentLength") as string) || "10") || 10);
+    const allowReencode = ["1","true","yes","on"].includes(String(formData.get("allowReencode") ?? "0").toLowerCase());
 
-    const allowReencode = ["1","true","yes","on"]
-      .includes(String(formData.get("allowReencode") ?? "0").toLowerCase());
-
-    if (!file) {
-      return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
-    }
-    if (!ffmpegReady) {
-      return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
-    }
+    if (!file) return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
+    if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
 
     const baseDir = "/app/temp";
     await fsp.mkdir(baseDir, { recursive: true });
 
     const ts = Date.now();
     const jobId = `${ts}_${Math.random().toString(36).slice(2, 8)}`;
-
-    // rutas
-    const inputPath = path.join(baseDir, `input_${jobId}_${file.name}`);
+    const safeName = file.name.replace(/[^\w.\- ]+/g, "_");
+    const inputPath = path.join(baseDir, `input_${jobId}_${safeName}`);
     const outDir = path.join(baseDir, `output_${jobId}`);
     await fsp.mkdir(outDir, { recursive: true });
-
-    // guardar archivo
     await fsp.writeFile(inputPath, Buffer.from(await file.arrayBuffer()));
 
     createJob(jobId);
@@ -72,68 +68,61 @@ export async function POST(request: NextRequest) {
     let finished = false;
     let triedReencode = false;
 
-    const buildAndRun = (mode: "copy" | "reencode") => {
-      const outputPattern = path.join(outDir, "segment_%03d.mp4");
-      const cmd = ffmpeg(inputPath)
-        .output(outputPattern);
+    const run = (mode: "copy" | "reencode") => {
+      const cmd = ffmpeg(inputPath).output(path.join(outDir, "segment_%03d.mp4"));
 
       if (mode === "copy") {
-  cmd.outputOptions([
-    "-y",
-    "-loglevel", "error",
-    "-nostdin",
+        cmd.outputOptions([
+          "-y",
+          "-loglevel", "error",
+          "-nostdin",
 
-    // Solo V/A; descarta data/subs/metadata problemáticos
-    "-map", "0:v:0",
-    "-map", "0:a:0?",
-    "-dn",
-    "-sn",
-    "-map_metadata", "-1",
+          // Solo V/A; descarta data/subs/metadata problemáticos
+          "-map", "0:v:0",
+          "-map", "0:a:0?",
+          "-dn",
+          "-sn",
+          "-map_metadata", "-1",
 
-    // Copia directa
-    "-c:v", "copy",
-    "-c:a", "copy",
+          // Copia directa
+          "-c:v", "copy",
+          "-c:a", "copy",
 
-    "-f", "segment",
-    "-segment_time", String(segmentSeconds),
-    "-reset_timestamps", "1",
-    "-movflags", "+faststart",
-  ]);
-} else {
-  cmd.outputOptions([
-    "-y",
-    "-loglevel", "error",
-    "-nostdin",
+          "-f", "segment",
+          "-segment_time", String(segmentSeconds),
+          "-reset_timestamps", "1",
+          "-movflags", "+faststart",
+        ]);
+      } else {
+        cmd.outputOptions([
+          "-y",
+          "-loglevel", "error",
+          "-nostdin",
 
-    // También filtra streams no AV
-    "-map", "0:v:0",
-    "-map", "0:a:0?",
-    "-dn",
-    "-sn",
-    "-map_metadata", "-1",
+          // Filtra streams no AV
+          "-map", "0:v:0",
+          "-map", "0:a:0?",
+          "-dn",
+          "-sn",
+          "-map_metadata", "-1",
 
-    // Re-encode compatible MP4
-    "-c:v", "libx264",
-    "-preset", process.env.X264_PRESET || "veryfast",
-    "-crf", process.env.X264_CRF || "23",
-    "-pix_fmt", "yuv420p",
-    "-c:a", "aac",
-    "-b:a", process.env.AAC_BITRATE || "128k",
-    "-movflags", "+faststart",
+          // Re-encode compatible MP4
+          "-c:v", "libx264",
+          "-preset", process.env.X264_PRESET ?? "veryfast",
+          "-crf", process.env.X264_CRF ?? "23",
+          "-pix_fmt", "yuv420p",
+          "-c:a", "aac",
+          "-b:a", process.env.AAC_BITRATE ?? "128k",
+          "-movflags", "+faststart",
 
-    "-f", "segment",
-    "-segment_time", String(segmentSeconds),
-    "-reset_timestamps", "1",
-  ]).on("stderr", (line: string) => console.log("ffmpeg stderr:", line));
-};
+          "-f", "segment",
+          "-segment_time", String(segmentSeconds),
+          "-reset_timestamps", "1",
+        ]);
       }
 
-      // logs de diagnóstico (muy útiles para saber por qué falla ffmpeg)
-      cmd.on("stderr", (line: string) => {
-        console.log("ffmpeg stderr:", line);
-      });
-
       cmd
+        .on("stderr", (line: string) => console.log("ffmpeg stderr:", line))
         .on("start", (line: string) => {
           console.log(`🎬 FFmpeg started [${mode}]:`, line);
           setProgress(jobId, mode === "copy" ? 5 : 10);
@@ -149,12 +138,10 @@ export async function POST(request: NextRequest) {
           if (finished) return;
           const names = (await fsp.readdir(outDir)).filter(n => n.endsWith(".mp4")).sort();
           console.log(`📦 Post-processing [${mode}]: ${names.length} segment(s)`);
-
-          // Si con copy no generó nada y está permitido re-encode → intentamos una vez
           if (names.length === 0 && mode === "copy" && allowReencode && !triedReencode) {
             triedReencode = true;
             console.warn("⚠️ 0 segments with copy; retrying with re-encode...");
-            buildAndRun("reencode");
+            run("reencode");
             return;
           }
 
@@ -165,38 +152,35 @@ export async function POST(request: NextRequest) {
           }));
           completeJob(jobId, files);
 
-          // Limpieza
           try { if (fs.existsSync(inputPath)) await fsp.rm(inputPath, { force: true }); } catch {}
           scheduleDeletion(jobId, outDir);
-
           console.log(`✅ Job done: ${jobId} [${mode}]`);
         })
-        .on("error", (err: unknown) => {
+        .on("error", async (err: unknown) => {
           const msg = getErrorMessage(err);
           console.error(`❌ FFmpeg error [${mode}]:`, msg);
 
           if (!finished && mode === "copy" && allowReencode && !triedReencode) {
             triedReencode = true;
             console.warn("⚠️ Copy failed; retrying with re-encode...");
-            buildAndRun("reencode");
+            run("reencode");
             return;
           }
 
           if (!finished) {
             finished = true;
             failJob(jobId, msg);
-            try { if (fs.existsSync(inputPath)) fs.rmSync(inputPath, { force: true }); } catch {}
-            try { if (fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true, force: true }); } catch {}
+            try { if (fs.existsSync(inputPath)) await fsp.rm(inputPath, { force: true }); } catch {}
+            try { if (fs.existsSync(outDir)) await fsp.rm(outDir, { recursive: true, force: true }); } catch {}
           }
         })
         .run();
     };
 
-    buildAndRun("copy");
+    run("copy");
     return NextResponse.json({ ok: true, jobId }, { status: 202 });
   } catch (error: unknown) {
     const msg = getErrorMessage(error);
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
-
