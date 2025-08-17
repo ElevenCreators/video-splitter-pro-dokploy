@@ -16,19 +16,23 @@ type LegacyResponse = { success: boolean; segments?: VideoSegment[]; error?: str
 function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null
 }
-
 function isJobResponse(x: unknown): x is JobResponse {
   return isRecord(x) && typeof x.ok === 'boolean'
 }
-
 function isLegacyResponse(x: unknown): x is LegacyResponse {
   return isRecord(x) && 'success' in x
 }
-
 function getErrorFromJson(x: unknown): string | null {
   if (!isRecord(x)) return null
   const v = x['error']
   return typeof v === 'string' ? v : null
+}
+
+/** Lee JSON sólo si el content-type es application/json */
+async function safeJson<T>(res: Response): Promise<T | null> {
+  const ct = res.headers.get('content-type') || ''
+  if (!ct.includes('application/json')) return null
+  try { return (await res.json()) as T } catch { return null }
 }
 
 export default function VideoSplitter() {
@@ -41,7 +45,7 @@ export default function VideoSplitter() {
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0]
-    if (file && file.size <= 2 * 1024 * 1024 * 1024) { // 2GB limit
+    if (file && file.size <= 2 * 1024 * 1024 * 1024) {
       setSelectedFile(file)
       setError('')
       setSegments([])
@@ -60,13 +64,32 @@ export default function VideoSplitter() {
 
   async function pollProgress(jobId: string) {
     setProgress(5)
+    const deadline = Date.now() + 2 * 60_000 // 2 minutos de timeout
     await new Promise<void>((resolvePoll, rejectPoll) => {
       const t = setInterval(async () => {
         try {
-          const r = await fetch(`/api/progress?jobId=${encodeURIComponent(jobId)}`)
-          const data: unknown = await r.json()
+          if (Date.now() > deadline) {
+            clearInterval(t)
+            rejectPoll(new Error('Processing timeout'))
+            return
+          }
 
-          if (!isRecord(data) || data['ok'] !== true) return
+          const r = await fetch(`/api/progress?jobId=${encodeURIComponent(jobId)}`)
+          // Si no es 200, intentamos leer texto para log y seguimos  (no romper el polling de una vez)
+          if (!r.ok) {
+            const txt = await r.text().catch(() => '')
+            console.warn('progress non-200:', r.status, txt.slice(0, 120))
+            return
+          }
+
+          const data = await safeJson<Record<string, unknown>>(r)
+          if (!data) {
+            const txt = await r.text().catch(() => '')
+            console.warn('progress non-JSON body:', txt.slice(0, 120))
+            return
+          }
+
+          if (data['ok'] !== true) return
           const job = isRecord(data['job']) ? (data['job'] as Record<string, unknown>) : null
           if (!job) return
 
@@ -82,15 +105,14 @@ export default function VideoSplitter() {
             resolvePoll()
           } else if (status === 'error') {
             clearInterval(t)
-            const errMsg = typeof job['error'] === 'string' ? job['error'] as string : 'Processing failed'
+            const errMsg = typeof job['error'] === 'string' ? (job['error'] as string) : 'Processing failed'
             rejectPoll(new Error(errMsg))
           }
         } catch (e) {
-          clearInterval(t)
-          const err = e instanceof Error ? e : new Error(String(e))
-          rejectPoll(err)
+          // En errores de red, no abortamos de una, esperamos siguiente tick
+          console.warn('progress fetch error:', e)
         }
-      }, 500)
+      }, 600)
     })
   }
 
@@ -108,12 +130,19 @@ export default function VideoSplitter() {
 
       const res = await fetch('/api/split-video', { method: 'POST', body: formData })
       if (!res.ok) {
-        const eJson: unknown = await res.json().catch(() => ({}))
-        const msg = getErrorFromJson(eJson) ?? 'Failed to process video'
-        throw new Error(msg)
+        // Intenta JSON; si no, texto
+        const j = await safeJson<unknown>(res)
+        if (j) throw new Error(getErrorFromJson(j) ?? 'Failed to process video')
+        const txt = await res.text().catch(() => '')
+        throw new Error(`Failed to process video: ${res.status} ${txt.slice(0, 160)}`)
       }
 
-      const result: unknown = await res.json()
+      const result = await safeJson<unknown>(res)
+      if (!result) {
+        const txt = await res.text().catch(() => '')
+        // Si el backend devolvió HTML (por proxy o algo), mostramos pista
+        throw new Error(`Unexpected response from /api/split-video: ${txt.slice(0, 160)}`)
+      }
 
       // NUEVO FLUJO (jobs + polling)
       if (isJobResponse(result) && result.ok && typeof result.jobId === 'string') {
