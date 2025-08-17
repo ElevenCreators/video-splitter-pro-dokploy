@@ -42,9 +42,21 @@ RUN mkdir -p /app/temp
 
 EXPOSE 3000
 
-# HEALTHCHECK contra nuestro endpoint
-HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
-  CMD curl -fsS "http://localhost:3000/api/health" || exit 1
+# FFmpeg ya está en esta imagen
+ENV FFMPEG_PATH=/usr/local/bin/ffmpeg
+ENV HOST=0.0.0.0
+ENV PORT=3000
+ENV PATH="/usr/local/bin:${PATH}"
 
-# Arranque: Next escucha en 0.0.0.0:3000
-CMD ["node","node_modules/next/dist/bin/next","start","-H","0.0.0.0","-p","3000"]
+# Carpeta temporal de trabajo
+RUN mkdir -p /app/temp
+
+EXPOSE 3000
+
+# HEALTHCHECK: dale más tiempo al arranque
+HEALTHCHECK --interval=10s --timeout=4s --start-period=60s --retries=10 \
+  CMD curl -fsS "http://localhost:${PORT}/api/health" || exit 1
+
+# 🔑 Usa ${PORT} si Dokploy lo exporta (ej. 8080). Formato shell para expansión.
+CMD ["sh","-lc","node node_modules/next/dist/bin/next start -H ${HOST} -p ${PORT:-3000}"]
+
