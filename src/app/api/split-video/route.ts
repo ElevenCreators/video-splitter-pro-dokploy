@@ -6,7 +6,6 @@ import path from "node:path";
 import { createJob, setProgress, completeJob, failJob, gc } from "@/lib/jobStore";
 import { startCleaner, scheduleDeletion } from "@/lib/tempCleaner";
 
-// Tipos auxiliares (evitan "any")
 type FFmpegAPI = typeof ffmpeg & { setFfmpegPath: (p: string) => void };
 interface FFmpegProgress {
   frames?: number;
@@ -23,7 +22,6 @@ function getErrorMessage(e: unknown): string {
   try { return JSON.stringify(e); } catch { return String(e); }
 }
 
-/** Configura path de ffmpeg sin usar ts-ignore */
 function setupFFmpegPath(): boolean {
   try {
     console.log("🔍 Setting up FFmpeg path...");
@@ -55,14 +53,14 @@ function setupFFmpegPath(): boolean {
 }
 
 const ffmpegReady = setupFFmpegPath();
-startCleaner(); // autocleaner en background
+startCleaner();
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   try {
-    gc(); // limpia jobs viejos del store en memoria
+    gc();
 
     const formData = await request.formData();
     const file = formData.get("video") as File | null;
@@ -90,6 +88,8 @@ export async function POST(request: NextRequest) {
 
     createJob(jobId);
 
+    let finished = false; // ← guard doble callback
+
     const command = ffmpeg(inputPath)
       .output(path.join(outDir, "segment_%03d.mp4"))
       .outputOptions([
@@ -107,42 +107,50 @@ export async function POST(request: NextRequest) {
         }
       })
       .on("end", async () => {
+        if (finished) return;
+        finished = true;
         try {
-          console.log("✅ FFmpeg completed");
           const names = (await fsp.readdir(outDir)).filter(n => n.endsWith(".mp4")).sort();
+          console.log(`📦 Post-processing: ${names.length} segment(s) at ${outDir}`);
           const files = names.map(name => ({
             name,
             url: `/api/download?job=${encodeURIComponent(jobId)}&file=${encodeURIComponent(name)}`
           }));
+          // Aunque haya 0 archivos, marcamos done (el cliente mostrará vacío). Log de advertencia:
+          if (files.length === 0) {
+            console.warn("⚠️ No segments found after FFmpeg end. Check input/flags.");
+          }
           completeJob(jobId, files);
-          // Borra input; schedule para outputs
-          try {
-            if (fs.existsSync(inputPath)) { await fsp.rm(inputPath, { force: true }); }
-          } catch {}
+
+          try { if (fs.existsSync(inputPath)) { await fsp.rm(inputPath, { force: true }); } } catch {}
           scheduleDeletion(jobId, outDir);
+          console.log(`✅ Job done: ${jobId}`);
         } catch (e) {
-          console.error("❌ Post-processing error:", getErrorMessage(e));
-          failJob(jobId, getErrorMessage(e));
+          const msg = getErrorMessage(e);
+          console.error("❌ Post-processing error:", msg);
+          failJob(jobId, msg);
         }
       })
       .on("error", (err: unknown) => {
-        console.error("❌ FFmpeg error:", getErrorMessage(err));
-        failJob(jobId, getErrorMessage(err));
-        // Limpieza sin "unused-expressions"
-        try {
-          if (fs.existsSync(inputPath)) { fs.rmSync(inputPath, { force: true }); }
-        } catch {}
-        try {
-          if (fs.existsSync(outDir)) { fs.rmSync(outDir, { recursive: true, force: true }); }
-        } catch {}
+        const msg = getErrorMessage(err);
+        console.error("❌ FFmpeg error:", msg);
+        // si ya terminó, ignoramos errores tardíos
+        if (!finished) {
+          failJob(jobId, msg);
+          try { if (fs.existsSync(inputPath)) { fs.rmSync(inputPath, { force: true }); } } catch {}
+          try { if (fs.existsSync(outDir)) { fs.rmSync(outDir, { recursive: true, force: true }); } } catch {}
+        } else {
+          console.warn("⚠️ Ignoring late error after end");
+        }
       });
 
     command.run();
     return NextResponse.json({ ok: true, jobId }, { status: 202 });
   } catch (error: unknown) {
-    console.error("❌ API error:", getErrorMessage(error));
+    const msg = getErrorMessage(error);
+    console.error("❌ API error:", msg);
     return NextResponse.json(
-      { ok: false, error: getErrorMessage(error) || "Internal server error" },
+      { ok: false, error: msg || "Internal server error" },
       { status: 500 }
     );
   }
