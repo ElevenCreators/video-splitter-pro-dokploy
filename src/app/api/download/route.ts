@@ -8,7 +8,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function nodeToWebStream(s: fs.ReadStream): ReadableStream {
-  // Node >=18: Readable.toWeb existe
   // @ts-expect-error - types mismatch between Node/Web readable
   return Readable.toWeb(s);
 }
@@ -27,8 +26,8 @@ async function sendFile(req: NextRequest, headOnly: boolean) {
     const fileParam = url.searchParams.get("file") || "";
     if (!job || !fileParam) return badRequest("Missing job/file");
 
-    const safeFile = path.basename(fileParam); // evita traversal
-    const baseDir = path.join("/app/temp", output_);
+    const safeFile = path.basename(fileParam);
+    const baseDir = path.join("/app/temp", `output_${job}`);
     const filePath = path.join(baseDir, safeFile);
 
     if (!fs.existsSync(filePath)) {
@@ -42,12 +41,11 @@ async function sendFile(req: NextRequest, headOnly: boolean) {
     const common = {
       "content-type": "video/mp4",
       "accept-ranges": "bytes",
-      "content-disposition": ttachment; filename="",
+      "content-disposition": `attachment; filename="${safeFile}"`,
       "cache-control": "no-store",
     } as Record<string, string>;
 
     if (range) {
-      // e.g. Range: bytes=START-END
       const m = /bytes=(\d*)-(\d*)/.exec(range);
       let start = 0;
       let end = total - 1;
@@ -60,7 +58,7 @@ async function sendFile(req: NextRequest, headOnly: boolean) {
           status: 416,
           headers: {
             ...common,
-            "content-range": ytes */,
+            "content-range": `bytes */${total}`,
           },
         });
       }
@@ -69,7 +67,7 @@ async function sendFile(req: NextRequest, headOnly: boolean) {
       const headers = {
         ...common,
         "content-length": String(chunkSize),
-        "content-range": ytes -/,
+        "content-range": `bytes ${start}-${end}/${total}`,
       };
 
       if (headOnly) {
@@ -80,7 +78,6 @@ async function sendFile(req: NextRequest, headOnly: boolean) {
       return new Response(nodeToWebStream(stream), { status: 206, headers });
     }
 
-    // Respuesta completa
     const headers = {
       ...common,
       "content-length": String(total),
