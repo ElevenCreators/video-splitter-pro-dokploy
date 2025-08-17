@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import ffmpeg from 'fluent-ffmpeg'
+import { ffmpeg } from "@/lib/ffmpeg";
 import fs from 'fs'
 import path from 'path'
 

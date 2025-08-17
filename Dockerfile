@@ -1,53 +1,49 @@
-FROM node:18-alpine
+# --- Stage 0: proveedor de FFmpeg (version-pinned)
+ARG FFMPEG_TAG=7.1-alpine
+FROM jrottenberg/ffmpeg:${FFMPEG_TAG} AS ffmpeg
 
-# Install system dependencies including FFmpeg
-RUN apk update && apk add --no-cache \
-    ffmpeg \
-    ffprobe \
-    bash \
-    curl
-
-# Verify FFmpeg installation and show paths
-RUN echo "=== Verifying FFmpeg Installation ===" && \
-    which ffmpeg && \
-    ffmpeg -version | head -1 && \
-    which ffprobe && \
-    ls -la /usr/bin/ffmpeg* && \
-    echo "=== FFmpeg installed successfully ==="
-
-# Install bun globally
-RUN npm install -g bun
-
-# Set working directory
+# --- Stage 1: builder (Bun oficial)
+FROM oven/bun:1-alpine AS builder
 WORKDIR /app
 
-# Copy package files first for better Docker layer caching
+# deps mínimas
+RUN apk add --no-cache bash curl
+
+# caché e instalación determinística
 COPY package.json bun.lock* ./
+RUN --mount=type=cache,target=/root/.bun bun install --frozen-lockfile
 
-# Install dependencies
-RUN bun install
-
-# Copy source code
+# copia código y build
 COPY . .
-
-# Create temp directory with proper permissions
-RUN mkdir -p temp && chmod 755 temp
-
-# Set FFmpeg environment variables explicitly
-ENV FFMPEG_PATH=/usr/bin/ffmpeg
-ENV FFPROBE_PATH=/usr/bin/ffprobe
-ENV PATH="/usr/bin:${PATH}"
-
-# Verify FFmpeg is accessible after environment setup
-RUN echo "=== Final FFmpeg Check ===" && \
-    $FFMPEG_PATH -version | head -1 && \
-    echo "FFmpeg ready for use"
-
-# Build the application
 RUN bun run build
 
-# Expose port
-EXPOSE 3000
+# --- Stage 2: runtime (Bun + FFmpeg del stage 0)
+FROM oven/bun:1-alpine AS runtime
+WORKDIR /app
 
-# Start the application
+ENV NODE_ENV=production
+
+# Copiamos binarios exactos de FFmpeg y FFprobe
+COPY --from=ffmpeg /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/
+
+# app no-root + temp
+RUN addgroup -S app && adduser -S app -G app \
+ && mkdir -p /app/temp && chown -R app:app /app
+
+# sólo lo necesario para correr
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/build ./build
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/bun.lock* ./
+
+# variables explícitas
+ENV FFMPEG_PATH=/usr/local/bin/ffmpeg
+ENV FFPROBE_PATH=/usr/local/bin/ffprobe
+ENV PATH="/usr/local/bin:${PATH}"
+
+# verificación
+RUN $FFMPEG_PATH -version && $FFPROBE_PATH -version
+
+EXPOSE 3000
+USER app
 CMD ["bun", "start"]
