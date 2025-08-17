@@ -29,7 +29,7 @@ function setupFFmpegPath(): boolean {
       if (fs.existsSync(p)) { api.setFfmpegPath(p); return true; }
     }
     console.warn("⚠️ FFmpeg path not resolved at init");
-    return true; // dejamos que fluent-ffmpeg intente su resolución
+    return true;
   } catch {
     return true;
   }
@@ -39,8 +39,22 @@ const ffmpegReady = setupFFmpegPath();
 startCleaner();
 
 export async function POST(request: NextRequest) {
+  // ====== LOG INICIAL PARA SABER SI LLEGA LA PETICIÓN ======
+  const ua = request.headers.get("user-agent") || "unknown";
+  const ct = request.headers.get("content-type") || "unknown";
+  const clHeader = request.headers.get("content-length");
+  const cl = clHeader ? Number(clHeader) : undefined;
+  console.log(`📥 /api/split-video: UA="${ua}" CT="${ct}" CL=${cl ?? "unknown"}`);
+
   try {
     gc();
+
+    // Límite de tamaño por cabecera (si está disponible)
+    const MAX = Number(process.env.MAX_FILE_SIZE || 0);
+    if (MAX && cl && cl > MAX) {
+      console.warn(`🚫 Payload too large: ${cl} > ${MAX}`);
+      return NextResponse.json({ ok: false, error: "Payload too large" }, { status: 413 });
+    }
 
     const formData = await request.formData();
     const file = formData.get("video") as File | null;
@@ -49,6 +63,8 @@ export async function POST(request: NextRequest) {
 
     if (!file) return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
     if (!ffmpegReady) return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
+
+    console.log(`✅ formData OK: name="${file.name}", size=${(file as any).size ?? "unknown"} bytes`);
 
     const baseDir = "/app/temp";
     await fsp.mkdir(baseDir, { recursive: true });
@@ -59,7 +75,10 @@ export async function POST(request: NextRequest) {
     const inputPath = path.join(baseDir, `input_${jobId}_${safeName}`);
     const outDir = path.join(baseDir, `output_${jobId}`);
     await fsp.mkdir(outDir, { recursive: true });
-    await fsp.writeFile(inputPath, Buffer.from(await file.arrayBuffer()));
+
+    // Guardar a disco
+    const ab = await file.arrayBuffer();
+    await fsp.writeFile(inputPath, Buffer.from(ab));
 
     createJob(jobId);
 
@@ -71,7 +90,6 @@ export async function POST(request: NextRequest) {
       const cmd = ffmpeg(inputPath).output(outputPattern);
 
       if (mode === "copy") {
-        // Copy: evita datos/subtítulos y mapea sólo v0 y a0? (opcional)
         cmd.outputOptions([
           "-y",
           "-loglevel", "error",
@@ -90,7 +108,6 @@ export async function POST(request: NextRequest) {
         ])
         .on("stderr", (line: string) => console.log("ffmpeg stderr:", line));
       } else {
-        // Re-encode: H.264 + AAC, similar calidad (~preset mediump, CRF 23)
         cmd.outputOptions([
           "-y",
           "-loglevel", "error",
@@ -178,7 +195,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, jobId }, { status: 202 });
   } catch (error: unknown) {
     const msg = getErrorMessage(error);
-    console.error("split-video route error:", msg);
+    console.error("split-video route error:", msg, error);
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
