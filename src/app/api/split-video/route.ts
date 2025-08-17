@@ -78,33 +78,54 @@ export async function POST(request: NextRequest) {
         .output(outputPattern);
 
       if (mode === "copy") {
-        // Segmentación con *stream copy* (rápida, sin pérdida)
-        cmd.outputOptions([
-          "-y",
-          "-loglevel", "error",
-          "-nostdin",
-          "-c", "copy",
-          "-map", "0",
-          "-f", "segment",
-          "-segment_time", String(segmentSeconds),
-          "-reset_timestamps", "1"
-        ]);
-      } else {
-        // Re-encode REAL para entradas problemáticas
-        cmd.outputOptions([
-          "-y",
-          "-loglevel", "error",
-          "-nostdin",
-          "-c:v", "libx264",
-          "-preset", "veryfast",
-          "-crf", "18",                // calidad visual alta (ajústalo si hace falta)
-          "-movflags", "+faststart",
-          "-c:a", "copy",              // conserva el audio si es posible
-          "-map", "0",
-          "-f", "segment",
-          "-segment_time", String(segmentSeconds),
-          "-reset_timestamps", "1"
-        ]);
+  cmd.outputOptions([
+    "-y",
+    "-loglevel", "error",
+    "-nostdin",
+
+    // Solo V/A; descarta data/subs/metadata problemáticos
+    "-map", "0:v:0",
+    "-map", "0:a:0?",
+    "-dn",
+    "-sn",
+    "-map_metadata", "-1",
+
+    // Copia directa
+    "-c:v", "copy",
+    "-c:a", "copy",
+
+    "-f", "segment",
+    "-segment_time", String(segmentSeconds),
+    "-reset_timestamps", "1",
+    "-movflags", "+faststart",
+  ]);
+} else {
+  cmd.outputOptions([
+    "-y",
+    "-loglevel", "error",
+    "-nostdin",
+
+    // También filtra streams no AV
+    "-map", "0:v:0",
+    "-map", "0:a:0?",
+    "-dn",
+    "-sn",
+    "-map_metadata", "-1",
+
+    // Re-encode compatible MP4
+    "-c:v", "libx264",
+    "-preset", process.env.X264_PRESET || "veryfast",
+    "-crf", process.env.X264_CRF || "23",
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac",
+    "-b:a", process.env.AAC_BITRATE || "128k",
+    "-movflags", "+faststart",
+
+    "-f", "segment",
+    "-segment_time", String(segmentSeconds),
+    "-reset_timestamps", "1",
+  ]).on("stderr", (line: string) => console.log("ffmpeg stderr:", line));
+};
       }
 
       // logs de diagnóstico (muy útiles para saber por qué falla ffmpeg)
@@ -178,3 +199,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
   }
 }
+
