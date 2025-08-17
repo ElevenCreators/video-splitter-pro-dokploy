@@ -110,7 +110,26 @@ export default function VideoSplitter() {
       formData.append('video', selectedFile)
       formData.append('segmentLength', String(segmentLength))
       formData.append("allowReencode", allowReencode ? '1' : '0')
-      formData.append("exactSegments", (allowReencode ? "1" : "0")); setProgress(100); return
+.append("exactSegments", (typeof allowReencode !== 'undefined' ? (allowReencode ? "1":"0") : "1"))
+
+      const res = await fetch('/api/split-video', { method: 'POST', body: formData })
+      if (!res.ok) {
+        const j = await safeJson<unknown>(res)
+        if (j) throw new Error(getErrorFromJson(j) ?? 'Failed to process video')
+        const txt = await res.text().catch(() => '')
+        throw new Error(`Failed to process video: ${res.status} ${txt.slice(0,160)}`)
+      }
+      const result = await safeJson<unknown>(res)
+      if (!result) {
+        const txt = await res.text().catch(() => '')
+        throw new Error(`Unexpected response from /api/split-video: ${txt.slice(0,160)}`)
+      }
+      if (isJobResponse(result) && result.ok && typeof result.jobId === 'string') {
+        await pollProgress(result.jobId)
+        return
+      }
+      if (isLegacyResponse(result) && result.success && Array.isArray(result.segments)) {
+        setSegments(result.segments); setProgress(100); return
       }
       throw new Error(getErrorFromJson(result) ?? 'Processing failed')
     } catch (err) {
@@ -287,6 +306,5 @@ export default function VideoSplitter() {
     </div>
   )
 }
-
 
 
