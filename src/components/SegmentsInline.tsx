@@ -2,6 +2,47 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 
+// --- iOS helpers (tipado, sin any) ---
+function isIOS(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /iP(hone|od|ad)/.test(navigator.userAgent);
+}
+
+interface ShareFilesData {
+  files?: File[];
+  title?: string;
+  text?: string;
+}
+interface NavigatorCanShareFiles extends Navigator {
+  canShare?: (data: ShareFilesData) => boolean;
+  share?: (data: ShareFilesData) => Promise<void>;
+}
+
+async function shareToIOS(url: string, name: string) {
+  // Descarga el MP4 y abre la hoja de compartir (para “Guardar video” en Fototeca)
+  const res = await fetch(url, { credentials: "same-origin" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  const file = new File([blob], name, { type: "video/mp4" });
+
+  const nav = navigator as NavigatorCanShareFiles;
+  if (typeof nav.canShare === "function" && nav.canShare({ files: [file] }) && typeof nav.share === "function") {
+    await nav.share({ files: [file], title: name, text: "Video segment" });
+    return;
+  }
+
+  // Fallback: abrir inline en una pestaña; el usuario toca Compartir → Guardar video
+  const o = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = o;
+  a.target = "_blank";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(o), 10000);
+}
+
+
 type Props = {
   initialJobId?: string;
   autoload?: boolean;
@@ -151,23 +192,35 @@ export default function SegmentsInline({
         ) : (
           <ul className="divide-y divide-[var(--border-subtle)]">
             {files.map((f) => (
-              <li
-                key={f}
-                className="flex items-center justify-between py-2.5 px-4"
-              >
-                <span className="truncate pr-3" title={f}>
-                  {f}
-                </span>
-                <a
-                  className="btn btn-muted text-sm"
-                  href={`${base}/api/segment?jobId=${encodeURIComponent(
-                    jobId
-                  )}&file=${encodeURIComponent(f)}`}
-                  aria-label={`Descargar ${f}`}
-                >
-                  Descargar
-                </a>
-              </li>
+              <li key={f} className="flex items-center justify-between py-2.5 px-4">
+  <span className="truncate pr-3" title={f}>{f}</span>
+  <div className="flex gap-2">
+    {/* Descarga estándar */}
+    <a
+      className="btn btn-muted text-sm"
+      href={`${base}/api/segment?jobId=${encodeURIComponent(jobId)}&file=${encodeURIComponent(f)}`}
+      aria-label={`Descargar ${f}`}
+    >
+      Descargar
+    </a>
+
+    {/* Solo iOS: Guardar en Fotos (Web Share API / visor inline) */}
+    {isIOS() && (
+      <button
+        className="btn btn-primary text-sm"
+        onClick={() =>
+          shareToIOS(
+            // nota: inline=1 para abrir en visor si falla Web Share
+            `${base}/api/segment?inline=1&jobId=${encodeURIComponent(jobId)}&file=${encodeURIComponent(f)}`,
+            f
+          )
+        }
+      >
+        Guardar en Fotos
+      </button>
+    )}
+  </div>
+</li>
             ))}
           </ul>
         )}

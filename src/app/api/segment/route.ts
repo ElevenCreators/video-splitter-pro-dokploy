@@ -1,46 +1,44 @@
 // src/app/api/segment/route.ts
 import { NextRequest } from "next/server";
-import { TEMP_DIR } from "@/lib/paths";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
-import { Readable } from "node:stream";
 import { createReadStream } from "node:fs";
+import { Readable } from "node:stream";
+import { TEMP_DIR } from "@/lib/paths";
 
 export const runtime = "nodejs";
 
-function safeJobId(raw: string | null): string {
-  if (!raw) throw new Error("Missing jobId");
-  if (!/^[A-Za-z0-9_-]+$/.test(raw)) throw new Error("Invalid jobId");
-  return raw;
-}
-function safeFile(raw: string | null): string {
-  if (!raw) throw new Error("Missing file");
-  // segment_000.mp4, segment_001.mp4, etc.
-  if (!/^segment_\d{3}\.mp4$/.test(raw)) throw new Error("Invalid file name");
-  return raw;
+function isValidName(n: string) {
+  return /^segment_\d{3}\.mp4$/.test(n);
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
+  const { searchParams } = new URL(req.url);
+  const jobId = searchParams.get("jobId");
+  const file = searchParams.get("file");
+  const inline = searchParams.get("inline") === "1";
+
+  if (!jobId || !file || !isValidName(file)) {
+    return new Response("Bad Request", { status: 400 });
+  }
+
+  const filePath = path.join(TEMP_DIR, `output_${jobId}`, file);
+
   try {
-    const { searchParams } = new URL(req.url);
-    const jobId = safeJobId(searchParams.get("jobId"));
-    const file = safeFile(searchParams.get("file"));
+    await fsp.access(filePath);
+    const nodeStream = createReadStream(filePath);
+    const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
 
-    const outDir = path.join(TEMP_DIR, `output_${jobId}`);
-    const filePath = path.join(outDir, file);
-    const stat = await fsp.stat(filePath);
+    const headers = new Headers();
+    headers.set("Content-Type", "video/mp4");
+    headers.set(
+      "Content-Disposition",
+      `${inline ? "inline" : "attachment"}; filename="${file}"`
+    );
+    headers.set("Cache-Control", "no-store");
 
-    const headers = new Headers({
-      "Content-Type": "video/mp4",
-      "Content-Length": String(stat.size),
-      "Content-Disposition": `attachment; filename="${file}"`,
-      "Cache-Control": "no-store",
-    });
-
-    const body = Readable.toWeb(createReadStream(filePath)) as unknown as BodyInit;
-    return new Response(body, { headers });
+    return new Response(webStream, { headers });
   } catch {
     return new Response("Not found", { status: 404 });
   }
 }
-
