@@ -1,3 +1,31 @@
+# tools/apply-download-endpoint.ps1
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+function Ensure-Dir { param([string]$Path) if (-not (Test-Path $Path)) { New-Item -ItemType Directory -Path $Path | Out-Null } }
+function Set-FileUtf8Lf {
+  param([string]$Path, [string]$Content)
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  $lf = ($Content -replace "`r?`n","`n")
+  [System.IO.File]::WriteAllText($Path, $lf, $utf8NoBom)
+}
+
+# Detectar raiz del repo de forma confiable
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$root = Resolve-Path (Join-Path $scriptDir "..")
+if (-not (Test-Path (Join-Path $root "package.json"))) {
+  # fallback: usar cwd si no encuentra package.json
+  $root = Resolve-Path .
+}
+
+# Rutas destino
+$apiDir = Join-Path $root "src/app/api/download"
+$libDir = Join-Path $root "src/lib"
+Ensure-Dir $apiDir
+Ensure-Dir $libDir
+
+# ========= 1) Endpoint /api/download =========
+$routeTs = @'
 // src/app/api/download/route.ts
 import { NextRequest } from "next/server";
 import fs from "node:fs";
@@ -12,7 +40,7 @@ export const runtime = "nodejs";
 const TEMP_DIR = process.env.TEMP_DIR ?? "/app/temp";
 
 function safeJobId(raw: string): string {
-  if (!/^[a-zA-Z0-9_]+$/.test(raw)) throw new Error("jobId invÃ¡lido");
+  if (!/^[a-zA-Z0-9_]+$/.test(raw)) throw new Error("jobId inválido");
   return raw;
 }
 
@@ -31,7 +59,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   try {
     const files = await listSegments(outDir);
-    console.log(`ðŸ“¦ segments(${jobId}): count=${files.length}`, files.slice(0, 5));
+    console.log(`📦 segments(${jobId}): count=${files.length}`, files.slice(0, 5));
 
     if (files.length === 0) {
       return new Response("No segments found", { status: 404 });
@@ -43,37 +71,3 @@ export async function GET(req: NextRequest): Promise<Response> {
       const headers = new Headers({
         "Content-Type": "video/mp4",
         "Content-Length": String(stat.size),
-        "Content-Disposition": `attachment; filename="${jobId}.mp4"`,
-        "Cache-Control": "no-store",
-      });
-      const body = Readable.toWeb(createReadStream(file)) as unknown as BodyInit;
-      return new Response(body, { headers });
-    }
-
-    const zip = archiver("zip", { zlib: { level: 9 } });
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        zip.on("data", (d: Buffer) => controller.enqueue(d));
-        zip.on("end", () => controller.close());
-        zip.on("error", (err: Error) => controller.error(err));
-        for (const f of files) {
-          const p = path.join(outDir, f);
-          zip.append(fs.createReadStream(p), { name: f });
-        }
-        void zip.finalize();
-      },
-      cancel() { zip.abort(); },
-    });
-
-    const headers = new Headers({
-      "Content-Type": "application/zip",
-      "Content-Disposition": `attachment; filename="${jobId}.zip"`,
-      "Cache-Control": "no-store",
-    });
-
-    return new Response(stream as unknown as BodyInit, { headers });
-  } catch (err) {
-    console.error("download error:", err);
-    return new Response("Internal error", { status: 500 });
-  }
-}
