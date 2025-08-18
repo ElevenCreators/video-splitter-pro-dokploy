@@ -1,248 +1,88 @@
-﻿// src/app/api/split-video/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { ffmpeg } from "@/lib/ffmpeg";
-import fs from "node:fs";
-import fsp from "node:fs/promises";
+// src/app/api/split-video/route.ts
+import { NextRequest } from "next/server";
 import path from "node:path";
-import { Readable } from "node:stream";
-import {
-  ReadableStream as WebReadableStream,
-  ReadableStreamDefaultReader,
-} from "node:stream/web";
-import { createJob, setProgress, completeJob, failJob, gc } from "@/lib/jobStore";
-import { startCleaner, scheduleDeletion } from "@/lib/tempCleaner";
+import fs from "node:fs/promises";
+import { TEMP_DIR } from "@/lib/paths";
+import { splitVideo } from "@/server/jobs/splitVideo";
+import { startTempCleaner } from "@/server/tempCleaner";
+startTempCleaner(); // inicia una vez por proceso
 
-type FFmpegAPI = typeof ffmpeg & { setFfmpegPath: (p: string) => void };
-interface FFmpegProgress { percent?: number }
-
-function getErrorMessage(e: unknown): string {
-  if (e instanceof Error) return e.message;
-  if (typeof e === "string") return e;
-  try { return JSON.stringify(e); } catch { return String(e); }
-}
-
-function setupFFmpegPath(): boolean {
-  try {
-    const api = ffmpeg as FFmpegAPI;
-    if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
-      api.setFfmpegPath(process.env.FFMPEG_PATH);
-      return true;
-    }
-    for (const p of ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg"]) {
-      if (fs.existsSync(p)) { api.setFfmpegPath(p); return true; }
-    }
-    console.warn("⚠️ FFmpeg path not resolved at init");
-    return true;
-  } catch {
-    return true;
-  }
-}
-
-const ffmpegReady = setupFFmpegPath();
-startCleaner();
-
-export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Convierte un WebReadableStream<Uint8Array> a Node Readable sin usar `any`
-function webToNodeReadable(web: WebReadableStream<Uint8Array>): Readable {
-  const iterator = (async function* () {
-    const reader: ReadableStreamDefaultReader<Uint8Array> = web.getReader();
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (value) yield Buffer.from(value);
-      }
-    } finally {
-      try { reader.releaseLock(); } catch {}
-    }
-  })();
-  return Readable.from(iterator);
+function genId(): string {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+function safeName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]+/g, "_");
+}
+function truthyFlag(v: unknown): boolean {
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest): Promise<Response> {
   try {
-    gc();
-
-    // 1) Leer form-data (compatible con móviles)
-    let formData: FormData;
-    try {
-      formData = await request.formData();
-    } catch (e) {
-      const ua = request.headers.get("user-agent") || "unknown";
-      const ct = request.headers.get("content-type") || "unknown";
-      console.error("❌ formData() failed", { ua, ct, error: getErrorMessage(e) });
-      return NextResponse.json({ ok: false, error: "Invalid multipart/form-data" }, { status: 400 });
+    const ct = req.headers.get("content-type") || "";
+    if (!ct.includes("multipart/form-data")) {
+      return Response.json({ ok: false, error: "Expected multipart/form-data" }, { status: 415 });
     }
 
-    const fileEntry = formData.get("video");
-    if (!fileEntry || !(fileEntry instanceof File)) {
-      return NextResponse.json({ ok: false, error: "No file provided" }, { status: 400 });
+    const form = await req.formData();
+
+    // archivo: soporta diferentes nombres ("video", "file", "upload")
+    const fileField =
+      (form.get("video") as unknown as File | null) ??
+      (form.get("file") as unknown as File | null) ??
+      (form.get("upload") as unknown as File | null);
+
+    if (!fileField) {
+      return Response.json({ ok: false, error: "Missing file" }, { status: 400 });
     }
 
-    const filename = fileEntry.name || "upload.bin";
-    const segmentSeconds = Math.max(1, Number((formData.get("segmentLength") as string) || "10") || 10);
-    const allowReencode = ["1", "true", "yes", "on"].includes(String(formData.get("allowReencode") ?? "0").toLowerCase());
-    const exactSegments = ["1", "true", "yes", "on"].includes(String(formData.get("exactSegments") ?? "0").toLowerCase());
+    // seconds: soporta "seconds" o "segmentLength"
+    const rawSeconds = form.get("seconds") ?? form.get("segmentLength");
+    let seconds = parseInt(String(rawSeconds ?? "").trim(), 10);
+    if (!Number.isFinite(seconds) || seconds < 1) seconds = 5;         // default seguro
+    if (seconds > 600) seconds = 600;                                  // límite razonable
 
-    if (!ffmpegReady) {
-      return NextResponse.json({ ok: false, error: "FFmpeg not ready" }, { status: 500 });
-    }
+    // modo: usa "mode" (copy|reencode), o deduce a partir de allowReencode
+    const rawMode = (form.get("mode") as string | null) ?? null;
+    const allowReencode = truthyFlag(form.get("allowReencode"));
+    const mode = (rawMode === "reencode" || rawMode === "copy")
+      ? (rawMode as "copy" | "reencode")
+      : (allowReencode ? "reencode" : "copy");
 
-    const baseDir = "/app/temp";
-    await fsp.mkdir(baseDir, { recursive: true });
+    // exactSegments: útil para forzar keyframes si tu splitVideo lo usa internamente
+    const exactSegments = truthyFlag(form.get("exactSegments"));
 
-    const ts = Date.now();
-    const jobId = `${ts}_${Math.random().toString(36).slice(2, 8)}`;
-    const inputPath = path.join(baseDir, `input_${jobId}_${filename}`);
-    const outDir = path.join(baseDir, `output_${jobId}`);
-    await fsp.mkdir(outDir, { recursive: true });
+    const jobId = genId();
+    const inputName = `input_${jobId}_${safeName((fileField as File).name || "video.mp4")}`;
+    const inputPath = path.join(TEMP_DIR, inputName);
 
-    createJob(jobId);
-    setProgress(jobId, 1);
+    // Crear temp y guardar archivo
+    await fs.mkdir(TEMP_DIR, { recursive: true });
+    const buf = Buffer.from(await (fileField as File).arrayBuffer());
+    await fs.writeFile(inputPath, buf);
 
-    // 2) Guardar upload a disco con stream (sin cargar todo a RAM)
-    try {
-      const webStream = fileEntry.stream() as unknown as WebReadableStream<Uint8Array>;
-
-      // Usa Readable.fromWeb si existe y está tipado en tu Node; si no, fallback manual
-      const R = Readable as typeof Readable & {
-        fromWeb?: (rs: WebReadableStream<Uint8Array>) => Readable;
-      };
-      const nodeStream: Readable = typeof R.fromWeb === "function"
-        ? R.fromWeb(webStream)
-        : webToNodeReadable(webStream);
-
-      await new Promise<void>((resolve, reject) => {
-        const ws = fs.createWriteStream(inputPath);
-        nodeStream.on("error", reject);
-        ws.on("error", reject);
-        ws.on("finish", resolve);
-        nodeStream.pipe(ws);
-      });
-    } catch (e) {
-      console.error("❌ failed to write upload to disk:", getErrorMessage(e));
-      return NextResponse.json({ ok: false, error: "Failed to save upload" }, { status: 500 });
-    }
-
-    let finished = false;
-    let triedReencode = false;
-
-    // 3) Ejecutar FFmpeg (copy -> fallback reencode)
-    const buildAndRun = (mode: "copy" | "reencode") => {
-      const outputPattern = path.join(outDir, "segment_%03d.mp4");
-      const cmd = ffmpeg(inputPath).output(outputPattern);
-
-      // opciones comunes
-      const commonArgs: string[] = [
-        "-y",
-        "-loglevel", "error",
-        "-nostdin",
-        "-ignore_unknown",        // ignora pistas desconocidas (iPhone, etc.)
-        "-map", "0:v:0",
-        "-map", "0:a:0?",
-        "-dn",
-        "-sn",
-        "-map_metadata", "-1",
-        "-f", "segment",
-        "-segment_time", String(segmentSeconds),
-        "-reset_timestamps", "1",
-        "-movflags", "+faststart",
-      ];
-
-      if (mode === "copy") {
-        cmd.outputOptions([
-          ...commonArgs,
-          "-c:v", "copy",
-          "-c:a", "copy",
-        ]);
-      } else {
-        cmd.outputOptions([
-          ...commonArgs,
-          "-c:v", "libx264",
-          "-preset", "veryfast",
-          "-crf", "23",
-          "-pix_fmt", "yuv420p",
-          "-c:a", "aac",
-          "-b:a", "128k",
-        ]);
-      }
-
-      cmd
-        .on("start", (line: string) => {
-          console.log(`🎬 FFmpeg started [${mode}]:`, line);
-          setProgress(jobId, mode === "copy" ? 5 : 10);
-        })
-        .on("progress", (p: FFmpegProgress) => {
-          if (typeof p.percent === "number") {
-            const base = mode === "copy" ? 5 : 10;
-            const scaled = Math.min(95, base + Math.floor(p.percent * 0.9));
-            setProgress(jobId, scaled);
-          }
-        })
-        .on("stderr", (line: string) => {
-          if (line) console.log("ffmpeg stderr:", line);
-        })
-        .on("end", async () => {
-          if (finished) return;
-          const names = (await fsp.readdir(outDir)).filter(n => n.endsWith(".mp4")).sort();
-
-          // si copy no produjo segmentos, reintenta con reencode una vez
-          if (names.length === 0 && mode === "copy" && !triedReencode) {
-            triedReencode = true;
-            console.warn("⚠️ 0 segments with copy; retrying with re-encode...");
-            buildAndRun("reencode");
-            return;
-          }
-
-          finished = true;
-          const files = names.map(name => ({
-            name,
-            url: `/api/download?job=${encodeURIComponent(jobId)}&file=${encodeURIComponent(name)}`
-          }));
-          completeJob(jobId, files);
-          try { if (fs.existsSync(inputPath)) await fsp.rm(inputPath, { force: true }); } catch {}
-          scheduleDeletion(jobId, outDir);
-          console.log(`✅ Job done: ${jobId} [${mode}]`);
-        })
-        .on("error", async (err: unknown) => {
-          const msg = getErrorMessage(err);
-          console.error(`❌ FFmpeg error [${mode}]:`, msg);
-
-          // si copy falla, reintenta reencode una vez (sin depender de allowReencode)
-          if (!finished && mode === "copy" && !triedReencode) {
-            triedReencode = true;
-            console.warn("⚠️ Copy failed; retrying with re-encode...");
-            buildAndRun("reencode");
-            return;
-          }
-
-          if (!finished) {
-            finished = true;
-            failJob(jobId, msg);
-            try { if (fs.existsSync(inputPath)) await fsp.rm(inputPath, { force: true }); } catch {}
-            try { if (fs.existsSync(outDir)) await fsp.rm(outDir, { recursive: true, force: true }); } catch {}
-          }
-        })
-        .run();
-    };
-
-    // exactSegments fuerza re-encode; si no, empieza con copy y cae a re-encode si hace falta
-    if (exactSegments) {
-      buildAndRun("reencode");
-    } else {
-      buildAndRun("copy");
-    }
-
-    return NextResponse.json(
-      { ok: true, jobId },
-      { status: 202, headers: { "cache-control": "no-store" } }
+    // LOG de verificación
+    console.log(
+      `🆔 Created job: ${jobId} ` +
+      `name="${(fileField as File).name}" ` +
+      `seconds=${seconds} mode=${mode} exact=${exactSegments} ` +
+      `input="${inputPath}"`
     );
-  } catch (error: unknown) {
-    const msg = getErrorMessage(error);
-    console.error("❌ Handler error:", msg);
-    return NextResponse.json({ ok: false, error: msg || "Internal server error" }, { status: 500 });
+
+    // Ejecutar job
+    await splitVideo(jobId, inputPath, seconds, mode);
+    // Si tu splitVideo acepta opciones, podrías pasar exactSegments también:
+    // await splitVideo(jobId, inputPath, seconds, mode, { exactSegments });
+
+    return Response.json(
+      { ok: true, jobId },
+      { status: 200, headers: { "Cache-Control": "no-store" } }
+    );
+  } catch (err) {
+    console.error("split-video error", err);
+    return Response.json({ ok: false, error: "Internal error" }, { status: 500 });
   }
 }
-

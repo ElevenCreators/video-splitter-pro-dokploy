@@ -1,7 +1,7 @@
-﻿import type { Metadata } from "next";
+import type { Metadata } from "next";
+import ClientBridges from "@/components/ClientBridges";
 import "./globals.css";
 import { Inter } from "next/font/google";
-import ClientBridges from "@/components/ClientBridges";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -16,12 +16,9 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="es">
-      <body>
-        {children}
-        <ClientBridges />
+    <html lang="en" className={inter.variable}>
+      <body className="min-h-dvh bg-[var(--bg)] text-[var(--fg)]">{children}  <ClientBridges />
 </body>
     </html>
   );
 }
-

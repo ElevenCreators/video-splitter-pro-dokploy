@@ -1,9 +1,10 @@
+import FetchSplitBridge from "@/components/FetchSplitBridge";
 'use client'
+import OldUiBridge from "@/components/OldUiBridge";
 
 import Image from 'next/image'
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import SegmentsInline from "@/components/SegmentsInline";
 
 interface VideoSegment {
   name: string
@@ -32,17 +33,11 @@ function getErrorFromJson(x: unknown): string | null {
 async function safeJson<T>(res: Response): Promise<T | null> {
   const ct = res.headers.get('content-type') || ''
   if (!ct.includes('application/json')) return null
-  try { return await res.json() as T } catch { return null }
+  try { return (await res.json()) as T } catch { return null }
 }
 
 export default function VideoSplitter() {
-useEffect(() => {
-  // Limpia lastJobId en cada entrada a la página
-  sessionStorage.removeItem("split:lastJobId");
-  sessionStorage.removeItem("split:lastJobAt");
-}, []);
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [lastJobId, setLastJobId] = useState<string>("")
   const [segmentLength, setSegmentLength] = useState(10)
   const [allowReencode, setAllowReencode] = useState(false) // off por defecto
   const [isProcessing, setIsProcessing] = useState(false)
@@ -115,13 +110,12 @@ useEffect(() => {
     try {
       const formData = new FormData()
       formData.append('video', selectedFile)
-      formData.append('seconds', String(segmentLength))                           // <-- clave correcta
-      formData.append('mode', allowReencode ? 'reencode' : 'copy')               // <-- modo explícito
-      formData.append('exactSegments', allowReencode ? '1' : '0')                // opcional: fuerza keyframes cuando reencode
+      formData.append('segmentLength', String(segmentLength))
+      formData.append("allowReencode", allowReencode ? '1' : '0')
+      formData.append("exactSegments", (allowReencode ? "1" : "0"));
       
 const res = await fetch('/api/split-video', { method: 'POST', body: formData });
 const result = await res.json();
-if (result?.jobId) setLastJobId(String(result.jobId));
 if (!res.ok || !result?.ok) {
   throw new Error(getErrorFromJson?.(result) ?? result?.error ?? 'Processing failed');
 }
@@ -168,7 +162,7 @@ setProgress(100);
 
   return (
     <div className="flex flex-col justify-center items-center min-h-screen gap-8 bg-[var(--bg)] text-[var(--fg)] px-4">
-      {/* Header con logo + tÃƒÆ’Ã‚Â­tulo nuevo */}
+      {/* Header con logo + tÃƒÂ­tulo nuevo */}
       <div className="text-center flex gap-3 flex-col m-4 p-1 items-center">
         <Image
           src="/logo.svg"
@@ -184,7 +178,7 @@ setProgress(100);
         </p>
       </div>
 
-      {/* ÃƒÆ’Ã‚Ârea de Drop como Card */}
+      {/* ÃƒÂrea de Drop como Card */}
       <div className="w-full max-w-lg">
         <div
           {...getRootProps()}
@@ -198,7 +192,7 @@ setProgress(100);
               </span>
             </div>
             <div><p className="text-xs text-[var(--fg-muted)]">Maximum 2Gb file.</p></div>
-            {selectedFile && (<div className="mt-2"><p className="text-sm text-green-400 text-center">✅ {selectedFile.name.normalize("NFC")}</p></div>)}
+            {selectedFile && <div className="mt-2"><p className="text-sm text-green-400 text-center">Ã¢Å“â€œ {selectedFile.name}</p></div>}
           </span>
         </div>
       </div>
@@ -216,7 +210,7 @@ setProgress(100);
           <span
             className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-white/10 text-gray-300 cursor-help"
             title="Activates a second, slower pass that recodes the video if the quick cut fails. Keeps original audio and uses high quality."
-            aria-label="MÃƒÆ’Ã‚Â¡s info"
+            aria-label="MÃƒÂ¡s info"
           >i</span>
         </span>
         <span className="tooltip">
@@ -254,7 +248,7 @@ setProgress(100);
         </div>
       </div>
 
-      {/* BotÃƒÆ’Ã‚Â³n principal */}
+      {/* BotÃƒÂ³n principal */}
       <button
         onClick={handleSplit}
         disabled={!selectedFile || isProcessing}
@@ -274,13 +268,40 @@ setProgress(100);
         <p className="p-1 text-sm mt-1">{progress.toFixed(2)}%</p>
       </div>
 
-      {/* Lista de segmentos debajo de la barra */}
-	<div className="w-full max-w-lg">
-  	<SegmentsInline initialJobId={lastJobId} autoload={false} />
-	</div>
-
       {/* Errores */}
       {error && <div className="text-red-400 text-sm max-w-md text-center">{error}</div>}
+
+      {/* Descargas */}
+      {segments.length > 0 && (
+        <div className="flex flex-col items-center gap-4 mt-2 w-full max-w-lg">
+          <h3 className="text-xl font-medium">Download Clips</h3>
+          <div className="grid gap-2 w-full">
+            {segments.map((segment, idx) => (
+              <button
+                key={idx}
+                onClick={() => downloadSegment(segment)}
+                className="btn btn-muted justify-between"
+              >
+                <span>{segment.name}</span>
+                <span className="text-sm text-[var(--fg-muted)]">
+                  {segment.size ? (segment.size/(1024*1024)).toFixed(2)+' MB' : 'ready'}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
+
+
+
+
+
+
+{/* OldUiBridge agregado para auto-descarga */}
+<OldUiBridge />
+
+
+<FetchSplitBridge />

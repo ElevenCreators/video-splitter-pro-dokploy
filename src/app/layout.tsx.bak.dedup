@@ -1,7 +1,9 @@
-﻿import type { Metadata } from "next";
+import type { Metadata } from "next";
+import ClientBridges from "@/components/ClientBridges";
 import "./globals.css";
 import { Inter } from "next/font/google";
 import ClientBridges from "@/components/ClientBridges";
+import SegmentsOverlay from "@/components/SegmentsOverlay";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -18,10 +20,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="es">
       <body>
-        {children}
         <ClientBridges />
-</body>
+        <SegmentsOverlay />
+        {children}
+      </body>
     </html>
   );
 }
-

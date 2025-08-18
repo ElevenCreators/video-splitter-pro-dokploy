@@ -6,13 +6,13 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { ReadableStream } from "node:stream/web";
 import archiver from "archiver";
+import { TEMP_DIR } from "@/lib/paths";
 
 export const runtime = "nodejs";
 
-const TEMP_DIR = process.env.TEMP_DIR ?? "/app/temp";
-
-function safeJobId(raw: string): string {
-  if (!/^[a-zA-Z0-9_]+$/.test(raw)) throw new Error("jobId invÃ¡lido");
+function safeJobId(raw: string | null): string {
+  if (!raw) throw new Error("Missing jobId");
+  if (!/^[A-Za-z0-9_-]+$/.test(raw)) throw new Error("Invalid jobId");
   return raw;
 }
 
@@ -23,15 +23,17 @@ async function listSegments(dir: string): Promise<string[]> {
 
 export async function GET(req: NextRequest): Promise<Response> {
   const { searchParams } = new URL(req.url);
-  const rawId = searchParams.get("jobId");
-  if (!rawId) return new Response("Missing jobId", { status: 400 });
+  const jobId = safeJobId(searchParams.get("jobId"));
 
-  const jobId = safeJobId(rawId);
+  // Logs seguros en ASCII
+  console.log("Download request jobId=%s", jobId);
+
   const outDir = path.join(TEMP_DIR, `output_${jobId}`);
+  console.log("Download path TEMP_DIR=%s outDir=%s", TEMP_DIR, outDir);
 
   try {
     const files = await listSegments(outDir);
-    console.log(`ðŸ“¦ segments(${jobId}): count=${files.length}`, files.slice(0, 5));
+    console.log("segments(%s): count=%d first=%s", jobId, files.length, files[0] || "");
 
     if (files.length === 0) {
       return new Response("No segments found", { status: 404 });
@@ -50,6 +52,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       return new Response(body, { headers });
     }
 
+    // ZIP streaming
     const zip = archiver("zip", { zlib: { level: 9 } });
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -73,7 +76,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
     return new Response(stream as unknown as BodyInit, { headers });
   } catch (err) {
-    console.error("download error:", err);
+    console.error("download error jobId=%s", jobId, err);
     return new Response("Internal error", { status: 500 });
   }
 }

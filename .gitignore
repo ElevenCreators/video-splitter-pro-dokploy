@@ -39,3 +39,21 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# --- build & deps ---
+node_modules/
+dist/
+coverage/
+types/
+# --- temporales runtime ---
+temp/
+app/temp/
+*.log
+*.zip
+# --- OS / editor ---
+Thumbs.db
+# --- TS / locks ---
+tsconfig.tsbuildinfo
+package-lock.json
+# --- env ---
+!.env.example

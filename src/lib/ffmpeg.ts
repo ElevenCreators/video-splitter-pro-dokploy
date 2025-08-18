@@ -1,43 +1,46 @@
-﻿import ffmpegFluent from "fluent-ffmpeg";
+// src/lib/ffmpeg.ts
 import fs from "node:fs";
-import path from "node:path";
 import { spawnSync } from "node:child_process";
+import fluent from "fluent-ffmpeg";
 
-// Export principal para usar en routes: import { ffmpeg } from "@/lib/ffmpeg"
-export const ffmpeg = ffmpegFluent;
-
-const CANDIDATES = [
-  process.env.FFMPEG_PATH || "",
+const candidates = [
+  process.env.FFMPEG_PATH,
+  // Windows comunes
+  "C:\\\\ffmpeg\\\\bin\\\\ffmpeg.exe",
+  "C:\\\\ProgramData\\\\chocolatey\\\\bin\\\\ffmpeg.exe",
+  // Linux/Mac
   "/usr/local/bin/ffmpeg",
   "/usr/bin/ffmpeg",
-  "/bin/ffmpeg",
-].filter(Boolean);
+].filter(Boolean) as string[];
 
-let resolved = "";
-
-for (const p of CANDIDATES) {
+let chosen = "";
+for (const p of candidates) {
   try {
-    if (p && fs.existsSync(p)) {
-      ffmpegFluent.setFfmpegPath(p);
-      resolved = p;
-      break;
-    }
+    if (p && fs.existsSync(p)) { chosen = p; break; }
   } catch {}
 }
 
-if (!resolved) {
-  console.warn("⚠️ FFmpeg path not resolved at init");
-} else {
-  try {
-    // Verificación segura: SOLO -version (sin process.argv)
-    const out = spawnSync(resolved, ["-version"], { encoding: "utf8" });
-    if (out.error) {
-      console.warn("⚠️ FFmpeg check error:", out.error.message);
-    } else {
-      const first = (out.stdout || "").split("\n")[0]?.trim();
-      console.log("✅ Using FFmpeg:", resolved, first ? `| ${first}` : "");
-    }
-  } catch (e) {
-    console.warn("⚠️ FFmpeg version check failed:", e instanceof Error ? e.message : String(e));
-  }
+if (!chosen) {
+  const cmd = process.platform === "win32" ? "where" : "which";
+  const r = spawnSync(cmd, ["ffmpeg"], { encoding: "utf8" });
+  const line = r.stdout?.split(/\r?\n/).find(Boolean)?.trim();
+  if (line && fs.existsSync(line)) chosen = line;
 }
+
+if (chosen) {
+  fluent.setFfmpegPath(chosen);
+  const guessProbe =
+    process.env.FFPROBE_PATH ||
+    (chosen.endsWith("ffmpeg.exe")
+      ? chosen.replace(/ffmpeg\.exe$/i, "ffprobe.exe")
+      : chosen.replace(/ffmpeg$/i, "ffprobe"));
+  if (guessProbe && fs.existsSync(guessProbe)) {
+    fluent.setFfprobePath(guessProbe);
+  }
+  console.log(`✅ Using FFmpeg: ${chosen}`);
+} else {
+  console.warn("⚠️ FFmpeg path not resolved at init");
+}
+
+export { fluent as ffmpeg };
+export default fluent;
