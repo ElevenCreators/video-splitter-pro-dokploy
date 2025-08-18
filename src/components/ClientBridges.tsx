@@ -56,54 +56,61 @@ export default function ClientBridges() {
     };
 
     const origOpen = XMLHttpRequest.prototype.open;
-    const origSend = XMLHttpRequest.prototype.send;
+const origSend = XMLHttpRequest.prototype.send;
 
-    let lastUrl = "";
-    XMLHttpRequest.prototype.open = function (
-      method: string,
-      url: string,
-      ...rest: [boolean?, string?, string?]
-    ) {
-      lastUrl = url;
-      return origOpen.call(this, method, url, ...rest);
-    };
+let lastUrl = "";
 
-    XMLHttpRequest.prototype.send = function (
-      body?: Document | XMLHttpRequestBodyInit | null
-    ) {
-      this.addEventListener("load", () => {
+// Firma explícita con parámetros opcionales y defaults seguros
+XMLHttpRequest.prototype.open = function (
+  method: string,
+  url: string,
+  async?: boolean,
+  username?: string | null,
+  password?: string | null
+) {
+  lastUrl = url;
+  // TypeScript ya no se queja: pasamos boolean y nulls explícitos
+  return origOpen.call(
+    this,
+    method,
+    url,
+    async ?? true,
+    username ?? null,
+    password ?? null
+  );
+};
+
+XMLHttpRequest.prototype.send = function (
+  body?: Document | XMLHttpRequestBodyInit | null
+) {
+  this.addEventListener("load", () => {
+    try {
+      const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+      const targets = ["/api/split-video", "/api/process"];
+      const isTarget = (u: string) => {
         try {
-          if (
-            isTargetUrl(lastUrl, targets, base) &&
-            this.status >= 200 &&
-            this.status < 300
-          ) {
-            const ct = this.getResponseHeader("content-type") ?? "";
-            if (ct.includes("application/json")) {
-              const data = JSON.parse(this.responseText) as JsonOk;
-              if (data?.ok && data?.jobId) {
-                const id = String(data.jobId);
-                sessionStorage.setItem("split:lastJobId", id);
-                sessionStorage.setItem("split:lastJobAt", String(Date.now()));
-                window.dispatchEvent(
-                  new CustomEvent("split:job", { detail: { jobId: id } })
-                );
-              }
-            }
-          }
+          const urlObj = new URL(u, window.location.origin);
+          return targets.some((p) => urlObj.pathname === base + p);
         } catch {
-          // ignore
+          return targets.some((p) => u.includes(p));
         }
-      });
-      return origSend.call(this, body);
-    };
+      };
 
-    return () => {
-      window.fetch = origFetch;
-      XMLHttpRequest.prototype.open = origOpen;
-      XMLHttpRequest.prototype.send = origSend;
-    };
-  }, []);
-
-  return null;
-}
+      if (isTarget(lastUrl) && this.status >= 200 && this.status < 300) {
+        const ct = this.getResponseHeader("content-type") ?? "";
+        if (ct.includes("application/json")) {
+          const data = JSON.parse(this.responseText) as { ok?: boolean; jobId?: string };
+          if (data?.ok && data?.jobId) {
+            const id = String(data.jobId);
+            sessionStorage.setItem("split:lastJobId", id);
+            sessionStorage.setItem("split:lastJobAt", String(Date.now()));
+            window.dispatchEvent(new CustomEvent("split:job", { detail: { jobId: id } }));
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  });
+  return origSend.call(this, body ?? null);
+};
