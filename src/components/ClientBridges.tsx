@@ -29,8 +29,8 @@ export default function ClientBridges() {
     const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
     const targets = ["/api/split-video", "/api/process"];
 
+    // --- fetch bridge ---
     const origFetch: typeof window.fetch = window.fetch.bind(window);
-
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const res = await origFetch(input, init);
       try {
@@ -55,62 +55,74 @@ export default function ClientBridges() {
       return res;
     };
 
+    // --- XHR bridge ---
     const origOpen = XMLHttpRequest.prototype.open;
-const origSend = XMLHttpRequest.prototype.send;
+    const origSend = XMLHttpRequest.prototype.send;
+    let lastUrl = "";
 
-let lastUrl = "";
+    XMLHttpRequest.prototype.open = function (
+      method: string,
+      url: string,
+      async?: boolean,
+      username?: string | null,
+      password?: string | null
+    ): void {
+      lastUrl = url;
+      // open retorna void, así que solo llamamos al original
+      origOpen.call(
+        this,
+        method,
+        url,
+        async ?? true,
+        username ?? null,
+        password ?? null
+      );
+    };
 
-// Firma explícita con parámetros opcionales y defaults seguros
-XMLHttpRequest.prototype.open = function (
-  method: string,
-  url: string,
-  async?: boolean,
-  username?: string | null,
-  password?: string | null
-) {
-  lastUrl = url;
-  // TypeScript ya no se queja: pasamos boolean y nulls explícitos
-  return origOpen.call(
-    this,
-    method,
-    url,
-    async ?? true,
-    username ?? null,
-    password ?? null
-  );
-};
-
-XMLHttpRequest.prototype.send = function (
-  body?: Document | XMLHttpRequestBodyInit | null
-) {
-  this.addEventListener("load", () => {
-    try {
-      const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-      const targets = ["/api/split-video", "/api/process"];
-      const isTarget = (u: string) => {
+    XMLHttpRequest.prototype.send = function (
+      body?: Document | XMLHttpRequestBodyInit | null
+    ): void {
+      this.addEventListener("load", () => {
         try {
-          const urlObj = new URL(u, window.location.origin);
-          return targets.some((p) => urlObj.pathname === base + p);
-        } catch {
-          return targets.some((p) => u.includes(p));
-        }
-      };
+          const baseLocal = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+          const targetsLocal = ["/api/split-video", "/api/process"];
+          const isTarget = (u: string): boolean => {
+            try {
+              const urlObj = new URL(u, window.location.origin);
+              return targetsLocal.some((p) => urlObj.pathname === baseLocal + p);
+            } catch {
+              return targetsLocal.some((p) => u.includes(p));
+            }
+          };
 
-      if (isTarget(lastUrl) && this.status >= 200 && this.status < 300) {
-        const ct = this.getResponseHeader("content-type") ?? "";
-        if (ct.includes("application/json")) {
-          const data = JSON.parse(this.responseText) as { ok?: boolean; jobId?: string };
-          if (data?.ok && data?.jobId) {
-            const id = String(data.jobId);
-            sessionStorage.setItem("split:lastJobId", id);
-            sessionStorage.setItem("split:lastJobAt", String(Date.now()));
-            window.dispatchEvent(new CustomEvent("split:job", { detail: { jobId: id } }));
+          if (isTarget(lastUrl) && this.status >= 200 && this.status < 300) {
+            const ct = this.getResponseHeader("content-type") ?? "";
+            if (ct.includes("application/json")) {
+              const data = JSON.parse(this.responseText) as JsonOk;
+              if (data?.ok && data?.jobId) {
+                const id = String(data.jobId);
+                sessionStorage.setItem("split:lastJobId", id);
+                sessionStorage.setItem("split:lastJobAt", String(Date.now()));
+                window.dispatchEvent(
+                  new CustomEvent("split:job", { detail: { jobId: id } })
+                );
+              }
+            }
           }
+        } catch {
+          // ignore
         }
-      }
-    } catch {
-      // ignore
-    }
-  });
-  return origSend.call(this, body ?? null);
-};
+      });
+      origSend.call(this, body ?? null);
+    };
+
+    // cleanup
+    return () => {
+      window.fetch = origFetch;
+      XMLHttpRequest.prototype.open = origOpen;
+      XMLHttpRequest.prototype.send = origSend;
+    };
+  }, []);
+
+  return null;
+}
