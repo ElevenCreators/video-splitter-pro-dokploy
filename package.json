@@ -39,7 +39,8 @@
                          "react-dropzone":  "^14.3.8",
                          "same-runtime":  "^0.0.1",
                          "tailwind-merge":  "^3.3.0",
-                         "tailwindcss-animate":  "^1.0.7"
+                         "tailwindcss-animate":  "^1.0.7",
+                         "archiver":  "^6.0.2"
                      },
     "devDependencies":  {
                             "@types/fluent-ffmpeg":  "^2.1.24",
