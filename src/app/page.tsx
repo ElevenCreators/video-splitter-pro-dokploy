@@ -5,6 +5,32 @@ import { useState, useCallback, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
 import SegmentsInline from "@/components/SegmentsInline";
 
+function isIOS(): boolean {
+  // Suficiente para Safari móvil
+  return /iP(hone|od|ad)/.test(navigator.userAgent);
+}
+
+type JobResponse = { ok: boolean; jobId?: string; error?: string };
+
+function postMultipartIOS(url: string, fd: FormData): Promise<JobResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url, true);
+    xhr.responseType = "json";
+    xhr.onload = () => {
+      try {
+        const statusOk = xhr.status >= 200 && xhr.status < 300;
+        const body = (xhr.response ?? JSON.parse(xhr.responseText || "{}")) as Partial<JobResponse>;
+        resolve({ ok: Boolean(statusOk && body?.ok), jobId: body?.jobId, error: body?.error });
+      } catch (e) {
+        reject(e);
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.send(fd);
+  });
+}
+
 interface VideoSegment {
   name: string
   url?: string
@@ -106,33 +132,53 @@ useEffect(() => {
   }
 
   const handleSplit = async () => {
-    if (!selectedFile) return
-    setIsProcessing(true)
-    setProgress(0)
-    setError('')
-    setSegments([])
+  if (!selectedFile) return;
+  setIsProcessing(true);
+  setProgress(0);
+  setError('');
+  setSegments([]);
 
-    try {
-      const formData = new FormData()
-      formData.append('video', selectedFile)
-      formData.append('seconds', String(segmentLength))                           // <-- clave correcta
-      formData.append('mode', allowReencode ? 'reencode' : 'copy')               // <-- modo explícito
-      formData.append('exactSegments', allowReencode ? '1' : '0')                // opcional: fuerza keyframes cuando reencode
-      
-const res = await fetch('/api/split-video', { method: 'POST', body: formData });
-const result = await res.json();
-if (result?.jobId) setLastJobId(String(result.jobId));
-if (!res.ok || !result?.ok) {
-  throw new Error(getErrorFromJson?.(result) ?? result?.error ?? 'Processing failed');
-}
-setProgress(100);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setProgress(0)
-    } finally {
-      setIsProcessing(false)
+  try {
+    const fd = new FormData();
+    fd.append('video', selectedFile);
+    fd.append('seconds', String(segmentLength));
+    fd.append('mode', allowReencode ? 'reencode' : 'copy');
+    if (allowReencode) fd.append('exactSegments', '1');
+
+    let result: JobResponse | null = null;
+
+    if (isIOS()) {
+      // iOS Safari: usa XHR
+      result = await postMultipartIOS('/api/split-video', fd);
+    } else {
+      // Otros: fetch normal
+      const res = await fetch('/api/split-video', {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+      });
+      const json = (await res.json().catch(() => ({}))) as Partial<JobResponse>;
+      result = { ok: Boolean(res.ok && json?.ok), jobId: json?.jobId, error: json?.error };
     }
+
+    if (!result?.ok || !result?.jobId) {
+      throw new Error(result?.error ?? 'Processing failed');
+    }
+
+    // Notificar a la UI (SegmentsInline escucha este evento y/o lee sessionStorage)
+    const id = String(result.jobId);
+    sessionStorage.setItem('split:lastJobId', id);
+    sessionStorage.setItem('split:lastJobAt', String(Date.now()));
+    window.dispatchEvent(new CustomEvent('split:job', { detail: { jobId: id } }));
+
+    setProgress(100);
+  } catch (err) {
+    setError(err instanceof Error ? err.message : String(err));
+    setProgress(0);
+  } finally {
+    setIsProcessing(false);
   }
+};
 
   const downloadSegment = async (segment: VideoSegment) => {
     if (segment.url) {
