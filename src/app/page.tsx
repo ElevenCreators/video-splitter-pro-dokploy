@@ -38,7 +38,6 @@ interface VideoSegment {
   size?: number
 }
 
-type JobResponse = { ok: boolean; jobId?: string; error?: string }
 type LegacyResponse = { success: boolean; segments?: VideoSegment[]; error?: string }
 
 function isRecord(x: unknown): x is Record<string, unknown> {
@@ -170,6 +169,8 @@ useEffect(() => {
     sessionStorage.setItem('split:lastJobId', id);
     sessionStorage.setItem('split:lastJobAt', String(Date.now()));
     window.dispatchEvent(new CustomEvent('split:job', { detail: { jobId: id } }));
+
+    setLastJobId(id);
 
     setProgress(100);
   } catch (err) {
