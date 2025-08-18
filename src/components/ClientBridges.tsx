@@ -2,75 +2,108 @@
 "use client";
 import { useEffect } from "react";
 
+type JsonOk = { ok?: boolean; jobId?: string };
+
+function isTargetUrl(
+  input: RequestInfo | URL | string,
+  targets: string[],
+  base: string
+): boolean {
+  try {
+    const s =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.href
+        : (input as Request).url;
+    const url = new URL(s, window.location.origin);
+    return targets.some((p) => url.pathname === base + p);
+  } catch {
+    const s = String((input as Request | URL | string) ?? "");
+    return targets.some((p) => s.includes(p));
+  }
+}
+
 export default function ClientBridges() {
   useEffect(() => {
-    const base = (process.env.NEXT_PUBLIC_BASE_PATH ?? "");
+    const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
     const targets = ["/api/split-video", "/api/process"];
-    const isTarget = (u: string) => {
-      try {
-        const url = new URL(u, window.location.origin);
-        return targets.some((p) => url.pathname === base + p);
-      } catch {
-        return typeof u === "string" && targets.some((p) => u.includes(p));
-      }
-    };
 
-    const origFetch = window.fetch.bind(window);
+    const origFetch: typeof window.fetch = window.fetch.bind(window);
+
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-      const res = await origFetch(input as any, init as any);
+      const res = await origFetch(input, init);
       try {
-        const url = typeof input === "string" ? input : (input as Request)?.url ?? "";
-        if (isTarget(url)) {
+        if (isTargetUrl(input, targets, base)) {
           const clone = res.clone();
-          const ct = clone.headers.get("content-type") || "";
+          const ct = clone.headers.get("content-type") ?? "";
           if (ct.includes("application/json")) {
-            const data: any = await clone.json().catch(() => null);
+            const data: JsonOk = await clone.json().catch(() => ({}));
             if (res.ok && data?.ok && data?.jobId) {
               const id = String(data.jobId);
               sessionStorage.setItem("split:lastJobId", id);
-              sessionStorage.setItem("split:lastJobAt", String(Date.now())); // <-- NUEVO
-              window.dispatchEvent(new CustomEvent("split:job", { detail: { jobId: id } }));
+              sessionStorage.setItem("split:lastJobAt", String(Date.now()));
+              window.dispatchEvent(
+                new CustomEvent("split:job", { detail: { jobId: id } })
+              );
             }
           }
         }
-      } catch {}
+      } catch {
+        // ignore
+      }
       return res;
     };
 
     const origOpen = XMLHttpRequest.prototype.open;
     const origSend = XMLHttpRequest.prototype.send;
+
     let lastUrl = "";
-    (XMLHttpRequest.prototype as any).open = function (method: string, url: string) {
+    XMLHttpRequest.prototype.open = function (
+      method: string,
+      url: string,
+      ...rest: [boolean?, string?, string?]
+    ) {
       lastUrl = url;
-      return origOpen.apply(this, arguments as any);
+      return origOpen.call(this, method, url, ...rest);
     };
-    (XMLHttpRequest.prototype as any).send = function (body?: any) {
-      const xhr = this as XMLHttpRequest;
-      xhr.addEventListener("load", () => {
+
+    XMLHttpRequest.prototype.send = function (
+      body?: Document | XMLHttpRequestBodyInit | null
+    ) {
+      this.addEventListener("load", () => {
         try {
-          const ok = xhr.status >= 200 && xhr.status < 300;
-          if (ok && isTarget(lastUrl)) {
-            const ct = xhr.getResponseHeader("content-type") || "";
+          if (
+            isTargetUrl(lastUrl, targets, base) &&
+            this.status >= 200 &&
+            this.status < 300
+          ) {
+            const ct = this.getResponseHeader("content-type") ?? "";
             if (ct.includes("application/json")) {
-              const data = JSON.parse(xhr.responseText);
+              const data = JSON.parse(this.responseText) as JsonOk;
               if (data?.ok && data?.jobId) {
-              const id = String(data.jobId);
-              sessionStorage.setItem("split:lastJobId", id);
-              sessionStorage.setItem("split:lastJobAt", String(Date.now())); // <-- NUEVO
-              window.dispatchEvent(new CustomEvent("split:job", { detail: { jobId: id } }));
+                const id = String(data.jobId);
+                sessionStorage.setItem("split:lastJobId", id);
+                sessionStorage.setItem("split:lastJobAt", String(Date.now()));
+                window.dispatchEvent(
+                  new CustomEvent("split:job", { detail: { jobId: id } })
+                );
               }
             }
           }
-        } catch {}
+        } catch {
+          // ignore
+        }
       });
-      return origSend.apply(this, arguments as any);
+      return origSend.call(this, body);
     };
 
     return () => {
       window.fetch = origFetch;
-      (XMLHttpRequest.prototype as any).open = origOpen;
-      (XMLHttpRequest.prototype as any).send = origSend;
+      XMLHttpRequest.prototype.open = origOpen;
+      XMLHttpRequest.prototype.send = origSend;
     };
   }, []);
+
   return null;
 }

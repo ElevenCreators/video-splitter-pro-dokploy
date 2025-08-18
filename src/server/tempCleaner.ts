@@ -3,11 +3,14 @@ import path from "node:path";
 import { promises as fsp } from "node:fs";
 import { TEMP_DIR } from "@/lib/paths";
 
-const g = globalThis as any;
+declare global {
+  // eslint-disable-next-line no-var
+  var __tempCleanerStarted: boolean | undefined;
+}
 
 export function startTempCleaner() {
-  if (g.__tempCleanerStarted) return;
-  g.__tempCleanerStarted = true;
+  if (globalThis.__tempCleanerStarted) return;
+  globalThis.__tempCleanerStarted = true;
 
   const ttlMin = Number(process.env.TEMP_TTL_MINUTES ?? "60");
   const everyMin = Number(process.env.TEMP_CLEAN_INTERVAL_MINUTES ?? "10");
@@ -33,14 +36,19 @@ export function startTempCleaner() {
             await fsp.rm(dir, { recursive: true, force: true });
             deleted++;
           }
-        } catch {}
+        } catch {
+          // ignore this entry
+        }
       }
-      console.log(`🧹 temp-cleaner: ttl=${ttlMin}m interval=${everyMin}m, deleted=${deleted}`);
+      console.log(
+        `🧹 temp-cleaner: ttl=${ttlMin}m interval=${everyMin}m, deleted=${deleted}`
+      );
     } catch (e) {
       console.warn("⚠️ temp-cleaner error:", e);
     }
   }
 
-  sweep().catch(()=>{});
+  // primera pasada y luego intervalos
+  sweep().catch(() => {});
   setInterval(sweep, intervalMs);
 }

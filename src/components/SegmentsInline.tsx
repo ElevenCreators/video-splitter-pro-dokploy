@@ -1,6 +1,6 @@
 // src/components/SegmentsInline.tsx
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type DebugResp =
   | { tempDir: string; outDir: string; count: number; files: string[] }
@@ -8,8 +8,8 @@ type DebugResp =
 
 type Props = {
   initialJobId?: string;
-  autoload?: boolean;                 // default: false (no autoload)
-  autoloadWindowMinutes?: number;     // usado solo si autoload=true
+  autoload?: boolean;
+  autoloadWindowMinutes?: number;
 };
 
 export default function SegmentsInline({
@@ -17,34 +17,38 @@ export default function SegmentsInline({
   autoload = false,
   autoloadWindowMinutes = 10,
 }: Props) {
-  const base = (process.env.NEXT_PUBLIC_BASE_PATH ?? "");
+  const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const [jobId, setJobId] = useState<string>(initialJobId ?? "");
   const [files, setFiles] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
-  async function refresh(id = jobId) {
-    if (!id) return;
-    setLoading(true);
-    try {
-      const r = await fetch(`${base}/api/debug-segments?jobId=${encodeURIComponent(id)}`, { cache: "no-store" });
-      const d = (await r.json()) as DebugResp;
-      setFiles("files" in d && Array.isArray(d.files) ? d.files : []);
-    } catch {
-      setFiles([]);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const refresh = useCallback(
+    async (id = jobId) => {
+      if (!id) return;
+      setLoading(true);
+      try {
+        const r = await fetch(
+          `${base}/api/debug-segments?jobId=${encodeURIComponent(id)}`,
+          { cache: "no-store" }
+        );
+        const d = (await r.json()) as DebugResp;
+        setFiles("files" in d && Array.isArray(d.files) ? d.files : []);
+      } catch {
+        setFiles([]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [jobId, base]
+  );
 
   useEffect(() => {
-    // 1) Si viene por prop, úsalo y no autoload
     if (initialJobId) {
       setJobId(initialJobId);
       void refresh(initialJobId);
       return;
     }
 
-    // 2) Solo autoload si se pide explícitamente
     if (autoload) {
       const last = sessionStorage.getItem("split:lastJobId");
       const at = Number(sessionStorage.getItem("split:lastJobAt") ?? "0");
@@ -59,10 +63,9 @@ export default function SegmentsInline({
       }
     }
 
-    // 3) Escuchar nuevo proceso
     const onEvt = (e: Event) => {
-      const detail = (e as CustomEvent).detail || {};
-      if (detail.jobId) {
+      const detail = (e as CustomEvent).detail as { jobId?: string } | undefined;
+      if (detail?.jobId) {
         const id = String(detail.jobId);
         setJobId(id);
         void refresh(id);
@@ -70,14 +73,16 @@ export default function SegmentsInline({
     };
     window.addEventListener("split:job", onEvt as EventListener);
     return () => window.removeEventListener("split:job", onEvt as EventListener);
-  }, [initialJobId, autoload, autoloadWindowMinutes]);
+  }, [initialJobId, autoload, autoloadWindowMinutes, refresh]);
 
   if (!jobId) return null;
 
   return (
     <section className="mt-6 w-full max-w-lg mx-auto">
       <div className="flex items-center justify-between">
-        <h3 className="text-xl font-medium">Download Clips <span className="text-[var(--fg-muted)]">({files.length})</span></h3>
+        <h3 className="text-xl font-medium">
+          Download Clips <span className="text-[var(--fg-muted)]">({files.length})</span>
+        </h3>
         <div className="flex gap-2">
           <button
             onClick={() => refresh()}
@@ -100,14 +105,14 @@ export default function SegmentsInline({
 
       <div className="mt-3 rounded-xl border border-[var(--border-subtle)] overflow-hidden">
         {files.length === 0 ? (
-          <div className="py-4 px-4 text-sm text-[var(--fg-muted)]">
-            No hay segmentos aún.
-          </div>
+          <div className="py-4 px-4 text-sm text-[var(--fg-muted)]">No hay segmentos aún.</div>
         ) : (
           <ul className="divide-y divide-[var(--border-subtle)]">
             {files.map((f) => (
               <li key={f} className="flex items-center justify-between py-2.5 px-4">
-                <span className="truncate pr-3" title={f}>{f}</span>
+                <span className="truncate pr-3" title={f}>
+                  {f}
+                </span>
                 <a
                   className="btn btn-muted text-sm"
                   href={`${base}/api/segment?jobId=${encodeURIComponent(jobId)}&file=${encodeURIComponent(f)}`}
