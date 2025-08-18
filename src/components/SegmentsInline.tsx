@@ -8,15 +8,8 @@ function isIOS(): boolean {
   return /iP(hone|od|ad)/.test(navigator.userAgent);
 }
 
-interface ShareFilesData {
-  files?: File[];
-  title?: string;
-  text?: string;
-}
-interface NavigatorCanShareFiles extends Navigator {
-  canShare?: (data: ShareFilesData) => boolean;
-  share?: (data: ShareFilesData) => Promise<void>;
-}
+// Usa el tipo estándar ShareData del DOM y lo ampliamos con files
+type ShareDataWithFiles = ShareData & { files?: File[] };
 
 async function shareToIOS(url: string, name: string) {
   // Descarga el MP4 y abre la hoja de compartir (para “Guardar video” en Fototeca)
@@ -25,13 +18,18 @@ async function shareToIOS(url: string, name: string) {
   const blob = await res.blob();
   const file = new File([blob], name, { type: "video/mp4" });
 
-  const nav = navigator as NavigatorCanShareFiles;
-  if (typeof nav.canShare === "function" && nav.canShare({ files: [file] }) && typeof nav.share === "function") {
-    await nav.share({ files: [file], title: name, text: "Video segment" });
+  // Hacemos un “narrow” del navigator para acceder a canShare/share con files
+  const nav = navigator as Navigator & {
+    canShare?: (data?: ShareDataWithFiles) => boolean;
+    share?: (data?: ShareDataWithFiles) => Promise<void>;
+  };
+
+  if (typeof nav.canShare === "function" && nav.canShare({ files: [file] })) {
+    await nav.share?.({ files: [file], title: name, text: "Video segment" });
     return;
   }
 
-  // Fallback: abrir inline en una pestaña; el usuario toca Compartir → Guardar video
+  // Fallback: abrir inline; el usuario toca Compartir → Guardar video
   const o = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = o;
@@ -41,7 +39,6 @@ async function shareToIOS(url: string, name: string) {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(o), 10000);
 }
-
 
 type Props = {
   initialJobId?: string;
